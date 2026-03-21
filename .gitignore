@@ -1,0 +1,16 @@
+# create .gitignore in your project root
+```
+
+Put this in it:
+```
+# Data files — too large for git, fetched via data_import.py
+data/raw/
+data/processed/
+*.csv
+*.xlsx
+*.parquet
+
+# Python
+.venv/
+__pycache__/
+*.pyc
