@@ -94,38 +94,47 @@ fetch_etf_data()
 
 def fetch_and_save_msci():
     """
-    Load MSCI World total return index from the raw Excel file,
-    compute monthly log returns, and save to parquet.
+    Load MSCI Europe daily index from CSV, resample to month-end,
+    compute monthly log returns, save to parquet.
 
-    Source file:  data/raw/MSCIworld_raw_2000_to_2025.xlsx
-    Sheet:        Performance Data
-    Columns:      Date (str, YYYY-MM-DD), MSCI World Index (float)
+    Source file:  data/raw/MSCI_Europe_daily.csv
+    Columns:      Date (YYYY-MM-DD), MSCI Europe Index (float)
+    Coverage:     2000-01-03 to 2025-12-xx (daily → resampled to month-end)
 
-    Log return:   r_t = ln(P_t / P_{t-1})
-    Coverage:     2000-01 to 2025-12 (312 monthly observations)
-    Saved to:     data/processed/msci_world.parquet
+    Resampling:   .resample('ME').last() — takes last trading day of each month
+    Log return:   r_t = ln(P_t / P_{t-1})  on monthly series
+    Saved to:     data/processed/msci_europe.parquet
     """
+    print("Loading MSCI Europe from CSV...")
 
-    BASE = Path(__file__).parent.parent  # goes up from data/ to project root
-    raw_path = BASE / "data" / "raw" / "MSCIworld_raw_2000_to_2025.xlsx"
-    processed_path = BASE / "data" / "processed" / "msci_world.parquet"
+    BASE = Path(__file__).parent.parent
+    raw_path = BASE / "data" / "raw" / "MSCI_Europe_daily.csv"
 
-    print("Loading MSCI World from Excel...")
-    print(f"  Looking for file at: {raw_path}")  # add this so you can see exact path
+    df = pd.read_csv(
+        raw_path,
+        usecols=[0, 1],                    # skip the empty trailing columns
+        names=["date", "price"],           # rename on load
+        header=0,                          # skip original header row
+        parse_dates=["date"],
+    )
 
-    df = pd.read_excel(raw_path, sheet_name="Performance Data")
-    df.columns = ["date", "price"]
-    df["date"] = pd.to_datetime(df["date"])
     df = df.set_index("date").sort_index()
-    df = df.loc["2000-01":"2025-12"]
-    df["equity_logret"] = np.log(df["price"] / df["price"].shift(1))
 
-    print(f"  Shape: {df.shape}")
-    print(f"  Coverage: {df.index.min().date()} → {df.index.max().date()}")
-    print(f"  NaNs: {df['equity_logret'].isna().sum()}")
+    # Resample daily → month-end (last trading day of each month)
+    monthly = df.resample("ME").last()
+    monthly = monthly.loc["2000-01":"2025-12"]
 
-    df[["price", "equity_logret"]].to_parquet(processed_path)
-    print("✓ Saved msci_world.parquet")
+    # Compute log returns
+    monthly["equity_logret"] = np.log(monthly["price"] / monthly["price"].shift(1))
+
+    print(f"  Shape:    {monthly.shape}")
+    print(f"  Coverage: {monthly.index.min().date()} → {monthly.index.max().date()}")
+    print(f"  NaNs:     {monthly['equity_logret'].isna().sum()} (first row expected)")
+    print(monthly.head(3))
+
+    processed_path = BASE / "data" / "processed" / "msci_europe.parquet"
+    monthly[["price", "equity_logret"]].to_parquet(processed_path)
+    print("✓ Saved msci_europe.parquet")
 
 
 

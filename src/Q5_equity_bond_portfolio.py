@@ -12,7 +12,7 @@
 #     What is the systematic risk in corporate bonds?
 #
 # INPUTS:  data/processed/etf_returns.parquet   (govt, corp log returns)
-#          data/processed/msci_world.parquet     (equity log returns)
+#          data/processed/msci_europe.parquet    (equity log returns)
 #
 # OUTPUTS: Q5_bond_portfolio_cumulative.png      — Part 1: bond-only portfolios
 #          Q5_diversified_cumulative.png          — Part 2: bond+equity portfolios
@@ -36,7 +36,7 @@ import matplotlib.gridspec as gridspec
 import seaborn as sns
 import statsmodels.api as sm
 from src.config import SUBPERIODS, COLORS
-from src.data_loader import load_etf_returns, load_msci_world
+from src.data_loader import load_etf_returns, load_msci_europe
 
 
 # ══════════════════════════════════════════════════════════════
@@ -47,17 +47,24 @@ def load_all_returns() -> pd.DataFrame:
     """
     Load and align all return series into a single DataFrame.
     Columns after alignment:
-      equity    — MSCI World log return
-      govt_mid  — iShares Euro Govt 7-10Y log return
-      govt_short— iShares Euro Govt 1-3Y log return
-      govt_long — iShares Euro Govt 15-30Y log return
-      corp_ig   — iShares EUR Corp Bond IG log return
+      equity     — MSCI Europe log return
+      govt_short — iShares Euro Govt 1-3Y log return
+      govt_mid   — iShares Euro Govt 7-10Y log return
+      govt_long  — iShares Euro Govt 15-30Y log return
+      corp_ig    — iShares EUR Corp Bond IG log return
 
-    Common sample: starts at the latest first-valid index across all series.
-    This is documented so readers know the exact window used.
+    FIX: ETF dates are month-start (2008-01-01), MSCI dates are month-end
+    (2008-01-31). Normalizing both to month-end via to_period('M') before
+    joining prevents all-NaN rows from the index mismatch.
+
+    Common sample starts at latest first-valid date (~2009-05).
     """
     etf  = load_etf_returns()
-    msci = load_msci_world()   # Series: log returns, index = month-end datetime
+    msci = load_msci_europe()
+
+    # Normalize both to month-end before joining
+    etf.index  = etf.index.to_period("M").to_timestamp("M")
+    msci.index = msci.index.to_period("M").to_timestamp("M")
 
     df = pd.DataFrame({
         "equity":     msci,
@@ -65,14 +72,12 @@ def load_all_returns() -> pd.DataFrame:
         "govt_mid":   etf["govt_mid_logret"],
         "govt_long":  etf["govt_long_logret"],
         "corp_ig":    etf["corp_ig_logret"],
-    })
-
-    # Align to common sample — drop rows where ANY series is NaN
-    df = df.dropna()
+    }).dropna()
 
     print(f"\n── Q5 Data Coverage ──")
     print(f"  Common sample: {df.index.min().date()} → {df.index.max().date()}")
     print(f"  Observations:  {len(df)} monthly")
+    print(f"  NaN counts:\n{df.isna().sum()}")
 
     return df
 
@@ -231,15 +236,11 @@ def run_systematic_risk_regression(returns: pd.DataFrame) -> dict:
     return model
 
 
-def compute_rolling_beta_equity(returns: pd.DataFrame,
+def compute_rolling_equity_beta(returns: pd.DataFrame,
                                  window: int = 36) -> pd.Series:
     """
-    Rolling OLS beta of corp_ig on equity over trailing window months.
-    Shows whether corporate bonds become more equity-like during crises
-    (correlation breakdown — key risk of corps as diversifiers).
-
-    Formula applied at each t:
-      beta_t = cov(corp_{t-w:t}, equity_{t-w:t}) / var(equity_{t-w:t})
+    Rolling beta of corp_ig on equity over trailing window months.
+    beta_t = cov(corp, equity) / var(equity)  over window t-w:t
     """
     rolling_beta = pd.Series(index=returns.index, dtype=float)
 

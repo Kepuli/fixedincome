@@ -7,58 +7,56 @@
 import pandas as pd
 from src.config import DATA_PROCESSED
 
+
 def load_spot_rates() -> pd.DataFrame:
     """Monthly ECB AAA spot rates. Columns: spot_1y ... spot_30y"""
     return pd.read_parquet(DATA_PROCESSED / "ecb_spot_rates.parquet")
 
-def load_govt_returns() -> pd.DataFrame:
-    """Monthly govt bond ETF log returns by maturity bucket."""
-    return pd.read_parquet(DATA_PROCESSED / "govt_bond_returns.parquet")
-
-def load_corp_returns() -> pd.DataFrame:
-    """Monthly corporate bond ETF log returns."""
-    return pd.read_parquet(DATA_PROCESSED / "corp_bond_returns.parquet")
-
-def load_equity_returns() -> pd.DataFrame:
-    """Monthly MSCI Europe log returns."""
-    return pd.read_parquet(DATA_PROCESSED / "equity_returns.parquet")
 
 def load_forward_regression_data() -> pd.DataFrame:
-    """Forward rates aligned with realized future spot rates."""
+    """Forward rates aligned with realized future spot rates. Built by Q2."""
     return pd.read_parquet(DATA_PROCESSED / "forward_regression_data.parquet")
+
 
 def load_etf_prices() -> pd.DataFrame:
     """Monthly ETF price levels. Columns: govt_short, govt_mid, govt_long, corp_ig, equity"""
     return pd.read_parquet(DATA_PROCESSED / "etf_prices.parquet")
 
+
 def load_etf_returns() -> pd.DataFrame:
-    """Monthly ETF log returns. Columns: *_logret"""
+    """
+    Monthly ETF log returns.
+    Columns: govt_short_logret, govt_mid_logret, govt_long_logret,
+             corp_ig_logret, equity_logret
+    Coverage: govt/equity ~2008, corp_ig ~2009
+    """
     return pd.read_parquet(DATA_PROCESSED / "etf_returns.parquet")
 
 
-### FOR q5, DOSENT WORK
-def load_msci_world() -> pd.Series:
+def load_msci_europe() -> pd.Series:
     """
-    Monthly MSCI World log returns.
-    Source: data/processed/msci_world.parquet
-    Built by data_import.py from MSCIworld_raw_2000_to_2025.xlsx
-    Coverage: 2000-01 to 2025-12
+    Monthly MSCI Europe log returns as a Series.
+    Source: data/processed/msci_europe.parquet
+    Built by data_import.py from MSCI_Europe_daily.csv (daily → month-end resample)
+    Coverage: Jan 2000 – Dec 2025 (312 observations)
     """
-    import pandas as pd
-    from src.config import DATA_PROCESSED
-    df = pd.read_parquet(DATA_PROCESSED / "msci_world.parquet")
+    df = pd.read_parquet(DATA_PROCESSED / "msci_europe.parquet")
     return df["equity_logret"]
 
 
 def load_all_asset_returns() -> pd.DataFrame:
     """
-    Convenience loader: all ETF log returns + MSCI World in one DataFrame.
+    Convenience loader: all ETF log returns + MSCI Europe aligned to common sample.
+    Normalizes both indices to month-end before joining to avoid date mismatch.
     Columns: equity, govt_short, govt_mid, govt_long, corp_ig
-    Common sample only (rows with any NaN dropped).
+    Coverage: common sample only (rows with any NaN dropped, starts ~2009-05)
     """
-    import pandas as pd
     etf  = load_etf_returns()
-    msci = load_msci_world()
+    msci = load_msci_europe()
+
+    # Normalize to month-end — ETF dates are month-start, MSCI dates are month-end
+    etf.index  = etf.index.to_period("M").to_timestamp("M")
+    msci.index = msci.index.to_period("M").to_timestamp("M")
 
     df = pd.DataFrame({
         "equity":     msci,
