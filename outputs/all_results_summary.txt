@@ -1,0 +1,54 @@
+
+────────────────────────────────────────────────────────────
+Q2: Forward Rate Regression Results
+────────────────────────────────────────────────────────────
+Horizon  Beta    p-value  R²     Interpretation                                  
+1Y       0.792   0.0      0.615  Strong predictive power, some term premium      
+2Y       0.429   0.0      0.194  Moderate power, significant term premium        
+3Y       0.077   0.188    0.008  No predictive power, large term premium         
+4Y       -0.175  0.0      0.06   Negative — forward rates predict wrong direction
+
+────────────────────────────────────────────────────────────
+Q3: Duration Risk — Full Sample
+────────────────────────────────────────────────────────────
+Bucket         Ann. Return (%)  Ann. Vol (%)  Sharpe  Max Drawdown (%)
+Short (1-3Y)   1.82             11.23         0.16    -42.16          
+Mid (7-10Y)    2.22             5.82          0.38    -22.87          
+Long (15-30Y)  0.83             1.84          0.45    -5.84           
+
+────────────────────────────────────────────────────────────
+Q4: Credit Premium by Sub-period
+────────────────────────────────────────────────────────────
+Period                      Mean monthly (%)  Annualized (%)
+Full sample                 -0.026            -0.31         
+Post-Lehman (2008-2009)     0.304             3.65          
+Sovereign Crisis (2010-12)  -0.197            -2.36         
+QE Era (2013-2021)          -0.107            -1.28         
+Hiking Cycle (2022-2025)    0.237             2.84          
+
+────────────────────────────────────────────────────────────
+Q5: Bond-Only Portfolios
+────────────────────────────────────────────────────────────
+Portfolio                              Ann. Return (%)  Sharpe  Max DD (%)
+Pure Govt (100% govt_mid)              2.28             0.4     -22.87    
+Blended Bond (50/50 govt/corp)         2.12             0.45    -18.8     
+Diversified Bond (33% short/mid/corp)  2.14             0.32    -26.7     
+
+────────────────────────────────────────────────────────────
+Q5: Mixed Bond+Equity Portfolios
+────────────────────────────────────────────────────────────
+Portfolio                    Ann. Return (%)  Sharpe  Max DD (%)
+60/40 (equity/govt)          5.49             0.52    -25.08    
+60/30/10 (equity/govt/corp)  5.46             0.51    -24.7     
+60/20/20 (equity/govt/corp)  5.42             0.5     -24.32    
+
+────────────────────────────────────────────────────────────
+Q5: Systematic Risk Regression
+────────────────────────────────────────────────────────────
+Parameter             Estimate  p-value  Interpretation                             
+Alpha (monthly %)     -0.0001   0.928    Not significant — no free credit alpha     
+Alpha (annualized %)  -0.08     —        After stripping equity + duration risk     
+Beta equity           0.121     0.0      Significant equity-like systematic risk    
+Beta govt             0.4921    0.0      Significant duration exposure              
+R-squared             0.561     —        56% of corp variance explained by 2 factors
+Observations          199       —        Monthly, 2009-06 to 2025-12                
