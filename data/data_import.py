@@ -13,8 +13,8 @@ DATA_PROCESSED.mkdir(exist_ok=True)  # creates the folder if it doesn't exist
 ##########################
 
 import_ecb_spot = False
-import_etf_data = False
-import_msci = True
+import_etf_data = True
+import_msci = False
 
 ##########################
 
@@ -75,11 +75,17 @@ def fetch_etf_data():
         auto_adjust=True
     )["Close"]
 
-    raw.columns = list(tickers.keys())
+    # Nimeä sarakkeet tickerin perusteella — EI järjestyksen perusteella
+    # yfinance saattaa palauttaa sarakkeet eri järjestyksessä kuin latasit
+    reverse_map = {v: k for k, v in tickers.items()}  # {"IBGS.AS": "govt_short", ...}
+    raw = raw.rename(columns=reverse_map)
 
     # Laske log-tuotot total return indexistä
     returns = np.log(raw / raw.shift(1))
     returns.columns = [c + "_logret" for c in raw.columns]
+
+    # Tarkistus — tulosta sarakkeiden järjestys jotta näkee onko oikein
+    print(f"  Columns in raw: {list(raw.columns)}")
 
     raw.to_parquet(DATA_PROCESSED / "etf_prices.parquet")
     returns.to_parquet(DATA_PROCESSED / "etf_returns.parquet")
