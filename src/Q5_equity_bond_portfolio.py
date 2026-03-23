@@ -490,12 +490,25 @@ def plot_efficient_frontier(returns: pd.DataFrame) -> plt.Figure:
     for (name, weights), mc in zip(specific.items(), marker_colors):
         r = build_portfolio_returns(returns, weights)
         p_ret = r.mean() * 12 * 100
-        p_vol = r.std()  * np.sqrt(12) * 100
+        p_vol = r.std() * np.sqrt(12) * 100
 
-        ax.scatter(p_vol, p_ret, color=mc, s=120, zorder=5, marker="*")
-        ax.annotate(name, (p_vol, p_ret),
-                    textcoords="offset points", xytext=(8, 4),
-                    fontsize=8, color=mc)
+        ax.scatter(
+            p_vol, p_ret,
+            color=mc,
+            s=120,
+            zorder=5,
+            marker="*",
+            label=name  # ✅ THIS is the key
+        )
+
+        ax.annotate(
+            name,
+            (p_vol, p_ret),
+            textcoords="offset points",
+            xytext=(8, 4),
+            fontsize=8,
+            color=mc
+        )
 
     # ── Styling ──
     ax.set_title("Efficient Frontier: With vs Without Corporate Bonds",
