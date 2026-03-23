@@ -1,34 +1,5 @@
-#DOSENT WORKKK!
 
-
-#1. Do corporate bonds add value to a bond portfolio? — pure fixed income context
-#2. Do corporate bonds add value to a diversified bond+equity portfolio? — broader context
-#3. What is the systematic risk in corporate bonds? — factor decomposition
-
-
-# src/Q5_equity_bond_portfolio.py
-# ─────────────────────────────────────────────────────────────
-# Q5: Do corporate bonds add value to a bond or diversified portfolio?
-#     What is the systematic risk in corporate bonds?
-#
-# INPUTS:  data/processed/etf_returns.parquet   (govt, corp log returns)
-#          data/processed/msci_europe.parquet    (equity log returns)
-#
-# OUTPUTS: Q5_bond_portfolio_cumulative.png      — Part 1: bond-only portfolios
-#          Q5_diversified_cumulative.png          — Part 2: bond+equity portfolios
-#          Q5_correlation_heatmap.png             — asset correlation matrix
-#          Q5_efficient_frontier.png              — frontier with/without corp
-#          Q5_summary_table.png                   — stats for all portfolios
-#          Q5_systematic_risk_regression.png      — factor regression table
-#          Q5_rolling_equity_beta.png             — rolling beta to equity
-#          Q5_drawdown_all.png                    — drawdown all portfolios
-#
-# NOTE ON DATA:
-#   Equity = MSCI World from data/processed/msci_world.parquet (2000-2025)
-#   Bonds  = ETF data from etf_returns.parquet (from ~2003)
-#   Common sample starts at the latest first-valid date across all series.
-# ─────────────────────────────────────────────────────────────
-
+from scipy.optimize import minimize
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -37,6 +8,7 @@ import seaborn as sns
 import statsmodels.api as sm
 from src.config import SUBPERIODS, COLORS
 from src.data_loader import load_etf_returns, load_msci_europe
+from scipy.signal import savgol_filter
 
 
 # ══════════════════════════════════════════════════════════════
@@ -259,7 +231,7 @@ def compute_rolling_equity_beta(returns: pd.DataFrame,
 
 def compute_frontier_points(returns: pd.DataFrame,
                              include_corp: bool = True,
-                             n_portfolios: int = 3000) -> tuple:
+                             n_portfolios: int = 7000) -> tuple:
     """
     Monte Carlo simulation of random portfolio weights to approximate
     the efficient frontier.
@@ -384,56 +356,157 @@ def plot_correlation_heatmap(returns: pd.DataFrame) -> plt.Figure:
     fig.tight_layout()
     return fig
 
+def extract_frontier(vols: np.ndarray, rets: np.ndarray) -> tuple:
+    """
+    Extract efficient frontier (upper envelope):
+    For each volatility level, keep the max return.
+    """
+    df = pd.DataFrame({"vol": vols, "ret": rets})
+    df = df.sort_values("vol")
+
+    # Keep only points that improve return
+    frontier = []
+    max_ret = -np.inf
+
+    for _, row in df.iterrows():
+        if row["ret"] > max_ret:
+            frontier.append(row)
+            max_ret = row["ret"]
+
+    frontier = pd.DataFrame(frontier)
+    return frontier["vol"].values, frontier["ret"].values
+
+from scipy.optimize import minimize
+
+def compute_exact_frontier(returns, include_corp=True, n_points=100):
+
+    if include_corp:
+        assets = ["equity", "govt_mid", "corp_ig"]
+    else:
+        assets = ["equity", "govt_mid"]
+
+    r = returns[assets].dropna()
+    mu = r.mean() * 12
+    Sigma = r.cov() * 12
+
+    n = len(mu)
+
+    def portfolio_vol(w):
+        return np.sqrt(w @ Sigma @ w)
+
+    def portfolio_ret(w):
+        return w @ mu
+
+    bounds = [(0, 1)] * n
+    constraints_base = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1}]
+
+    target_returns = np.linspace(mu.min(), mu.max(), n_points)
+
+    vols, rets = [], []
+
+    # ✅ initialize once
+    prev_w = np.ones(n) / n
+
+    for target in target_returns:
+
+        constraints = constraints_base + [
+            {'type': 'eq', 'fun': lambda w, target=target: portfolio_ret(w) - target}
+        ]
+
+        res = minimize(
+            portfolio_vol,
+            prev_w,  # ✅ warm start
+            bounds=bounds,
+            constraints=constraints
+        )
+
+        if res.success:
+            w_opt = res.x
+
+            vols.append(portfolio_vol(w_opt) * 100)
+            rets.append(portfolio_ret(w_opt) * 100)
+
+            # ✅ update for next iteration
+            prev_w = w_opt
+
+        else:
+            # fallback (optional but robust)
+            prev_w = np.ones(n) / n
+
+    return np.array(vols), np.array(rets)
+
 
 def plot_efficient_frontier(returns: pd.DataFrame) -> plt.Figure:
-    """
-    Exhibit 4: Efficient frontier — with vs without corporate bonds.
-    If the frontier shifts outward (higher return per unit of risk) when
-    corp is added, corporate bonds genuinely add diversification value.
-
-    Monte Carlo: 3000 random weight combinations per universe.
-    Color = Sharpe ratio (return/vol) of each random portfolio.
-    """
     fig, ax = plt.subplots(figsize=(10, 7))
 
-    # Without corp
+    # ── Monte Carlo clouds (keep for intuition) ──
     vols_no, rets_no = compute_frontier_points(returns, include_corp=False)
-    ax.scatter(vols_no, rets_no, c="darkorange", alpha=0.2, s=5,
-               label="Equity + Govt only")
-
-    # With corp
     vols_yes, rets_yes = compute_frontier_points(returns, include_corp=True)
+
+    ax.scatter(vols_no, rets_no, color="darkorange", alpha=0.05, s=3)
+    ax.scatter(vols_yes, rets_yes, color="steelblue", alpha=0.08, s=4)
+
+    # ── EXACT FRONTIERS (this is the upgrade) ──
+    fvols_no, frets_no = compute_exact_frontier(returns, include_corp=False)
+    fvols_yes, frets_yes = compute_exact_frontier(returns, include_corp=True)
+
+    #smooth
+    frets_yes = savgol_filter(frets_yes, 11, 3)
+
+    # 2-asset frontier
+    ax.plot(
+        fvols_no,
+        frets_no,
+        color="darkorange",
+        linewidth=1.5,
+        label="Frontier: Equity + Govt"
+    )
+
+    # 3-asset frontier
+    ax.plot(
+        fvols_yes,
+        frets_yes,
+        color="steelblue",
+        linewidth=1.5,
+        label="Frontier: Equity + Govt + Corp"
+    )
+
+    # ── Sharpe coloring ONLY for 3-asset cloud ──
     sharpe_yes = rets_yes / vols_yes
     sc = ax.scatter(vols_yes, rets_yes, c=sharpe_yes, cmap="RdYlGn",
-                    alpha=0.3, s=5, label="Equity + Govt + Corp IG")
+                    alpha=0.25, s=6)
 
     plt.colorbar(sc, ax=ax, label="Sharpe Ratio")
 
-    # Mark specific portfolios
+    # ── Specific portfolios ──
     specific = {
         "60/40 Equity/Govt": {"equity": 0.6, "govt_mid": 0.4},
         "60/30/10 +Corp":    {"equity": 0.6, "govt_mid": 0.3, "corp_ig": 0.1},
         "60/20/20 +Corp":    {"equity": 0.6, "govt_mid": 0.2, "corp_ig": 0.2},
     }
+
     marker_colors = ["navy", "darkgreen", "darkred"]
+
     for (name, weights), mc in zip(specific.items(), marker_colors):
-        r     = build_portfolio_returns(returns, weights)
+        r = build_portfolio_returns(returns, weights)
         p_ret = r.mean() * 12 * 100
         p_vol = r.std()  * np.sqrt(12) * 100
-        ax.scatter(p_vol, p_ret, color=mc, s=120, zorder=5,
-                   marker="*", label=name)
-        ax.annotate(name, (p_vol, p_ret), textcoords="offset points",
-                    xytext=(8, 4), fontsize=8, color=mc)
 
+        ax.scatter(p_vol, p_ret, color=mc, s=120, zorder=5, marker="*")
+        ax.annotate(name, (p_vol, p_ret),
+                    textcoords="offset points", xytext=(8, 4),
+                    fontsize=8, color=mc)
+
+    # ── Styling ──
     ax.set_title("Efficient Frontier: With vs Without Corporate Bonds",
                  fontsize=13, fontweight="bold")
     ax.set_xlabel("Annualized Volatility (%)")
     ax.set_ylabel("Annualized Return (%)")
-    ax.legend(fontsize=8, loc="upper left")
+    ax.legend(fontsize=9, loc="upper left")
     ax.grid(alpha=0.3)
+
     fig.tight_layout()
     return fig
-
 
 def plot_summary_table(bond_stats: pd.DataFrame,
                         mixed_stats: pd.DataFrame) -> plt.Figure:
@@ -621,6 +694,74 @@ def plot_drawdown_all(bond_ports: pd.DataFrame,
     fig.tight_layout()
     return fig
 
+def plot_frontiers_and_cals(returns: pd.DataFrame, rf: float = 0.0) -> plt.Figure:
+    fig, ax = plt.subplots(figsize=(10, 7))
+
+    # ── FRONTIERS ──
+    fvols_no, frets_no = compute_exact_frontier(returns, include_corp=False)
+    fvols_yes, frets_yes = compute_exact_frontier(returns, include_corp=True)
+
+    ax.plot(fvols_no, frets_no,
+            color="darkorange", linewidth=2,
+            label="Frontier: Equity + Govt")
+
+    ax.plot(fvols_yes, frets_yes,
+            color="steelblue", linewidth=2,
+            label="Frontier: Equity + Govt + Corp")
+
+    # ── TANGENCY PORTFOLIOS ──
+    def compute_tangent(returns, include_corp):
+        if include_corp:
+            assets = ["equity", "govt_mid", "corp_ig"]
+        else:
+            assets = ["equity", "govt_mid"]
+
+        r = returns[assets].dropna()
+        mu = r.mean() * 12
+        Sigma = r.cov() * 12
+
+        excess = mu - rf
+        w = np.linalg.inv(Sigma) @ excess
+        w /= np.sum(w)
+
+        ret = w @ mu
+        vol = np.sqrt(w @ Sigma @ w)
+
+        return ret * 100, vol * 100
+
+    ret_no, vol_no = compute_tangent(returns, include_corp=False)
+    ret_yes, vol_yes = compute_tangent(returns, include_corp=True)
+
+    # ── CAL LINES ──
+    x = np.linspace(0, max(fvols_yes) * 1.2, 200)
+
+    ax.plot(x, (ret_no / vol_no) * x,
+            linestyle="--", color="darkorange", alpha=0.8,
+            label="CAL (no corp)")
+
+    ax.plot(
+        x, (ret_yes / vol_yes) * x,
+        linestyle=(3, (6, 4)),  # 👈 shifted phase
+        color="steelblue",
+        alpha=0.8,
+        label="CAL (with corp)"
+    )
+
+    # ── MARK TANGENCY POINTS (optional but clean) ──
+    ax.scatter(vol_no, ret_no, color="darkorange", s=80, zorder=5)
+    ax.scatter(vol_yes, ret_yes, color="steelblue", s=80, zorder=5)
+
+    # ── STYLING ──
+    ax.set_title("Efficient Frontier & Capital Allocation Lines",
+                 fontsize=13, fontweight="bold")
+    ax.set_xlabel("Annualized Volatility (%)")
+    ax.set_ylabel("Annualized Return (%)")
+    ax.legend(fontsize=10)
+    ax.grid(alpha=0.3)
+
+    fig.tight_layout()
+    return fig
+
 
 # ══════════════════════════════════════════════════════════════
 # 7. RUN ALL
@@ -664,4 +805,5 @@ def run_all() -> dict:
         "Q5_rolling_equity_beta.png":       plot_rolling_equity_beta(returns),
         "Q5_drawdown_all.png":              plot_drawdown_all(bond_port_returns,
                                                               mixed_port_returns),
+        "Q5_frontier_cals.png": plot_frontiers_and_cals(returns),
     }
