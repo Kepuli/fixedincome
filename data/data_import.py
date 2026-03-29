@@ -1,3 +1,5 @@
+from idlelib.autocomplete import TRY_A
+
 import refinitiv.data as rd
 import requests
 import pandas as pd
@@ -20,8 +22,8 @@ DATA_RAW.mkdir(exist_ok=True)
 import_ecb_spot     = False
 import_etf_data     = False
 import_msci         = False
-import_refinitiv    = False   # ← new flag
-import_msci_refinitiv = True
+import_refinitiv    = True   # ← new flag
+import_msci_refinitiv = False
 
 ##########################
 
@@ -88,7 +90,10 @@ def fetch_and_save_refinitiv():
 
     # ── Fetch ─────────────────────────────────────────────────
     govt_prices = fetch_series({
-        "govt_all": ".IBBEU0144",   # iBoxx EUR Sovereigns (all maturities)
+        "govt_all": ".IBBEU0144",  # iBoxx EUR Sovereigns (all maturities)
+        "govt_short": ".IBBEU0147",  # iBoxx EUR Sovereigns 1-3Y
+        "govt_mid": ".IBBEU0154",  # iBoxx EUR Sovereigns 7-10Y
+        "govt_long": ".IBBEU0145",  # iBoxx EUR Sovereigns 10+
     })
 
     corp_prices = fetch_series({

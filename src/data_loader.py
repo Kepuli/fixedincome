@@ -132,4 +132,20 @@ def load_corp_returns_refinitiv() -> pd.Series | None:
         if "corp_ig_logret" in df.columns:
             return df["corp_ig_logret"]
 
+
+    return None
+
+def load_govt_duration_returns_refinitiv() -> pd.DataFrame | None:
+    """
+    Monthly iBoxx EUR Sovereign maturity sub-index log returns.
+    Columns: govt_short_logret, govt_mid_logret, govt_long_logret
+    Coverage: ~2000–2025
+    Returns None if not available.
+    """
+    path = DATA_PROCESSED / "refinitiv_returns.parquet"
+    if path.exists():
+        df = pd.read_parquet(path)
+        needed = ["govt_short_logret", "govt_mid_logret", "govt_long_logret"]
+        if all(c in df.columns for c in needed):
+            return df[needed]
     return None
