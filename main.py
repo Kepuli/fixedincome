@@ -134,10 +134,10 @@ def run_module(label: str, module):
     except Exception as e:
         print(f"  ✗ failed — {e}\n")
 
-#run_module("Q1: Yield Curve Dynamics",          q1)
-#run_module("Q2: Forward Rates",                 q2)
-#run_module("Q3: Duration Risk",                 q3)
-#run_module("Q4: Credit Markets",                q4)
+run_module("Q1: Yield Curve Dynamics",          q1)
+run_module("Q2: Forward Rates",                 q2)
+run_module("Q3: Duration Risk",                 q3)
+run_module("Q4: Credit Markets",                q4)
 run_module("Q5: Portfolio & Systematic Risk",   q5)
 
 print("\n── Saving numerical summary tables ──")

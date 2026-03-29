@@ -25,12 +25,38 @@ def load_etf_prices() -> pd.DataFrame:
 
 def load_etf_returns() -> pd.DataFrame:
     """
-    Monthly ETF log returns.
+    Monthly bond log returns.
+    Prefers Refinitiv iBoxx indices (2000-2025) if available.
+    Falls back to iShares ETF proxies (2008/2009-2025) if not.
     Columns: govt_short_logret, govt_mid_logret, govt_long_logret,
-             corp_ig_logret, equity_logret
-    Coverage: govt/equity ~2008, corp_ig ~2009
+             corp_ig_logret
     """
-    return pd.read_parquet(DATA_PROCESSED / "etf_returns.parquet")
+    refinitiv_govt = DATA_PROCESSED / "refinitiv_govt_returns.parquet"
+    refinitiv_corp = DATA_PROCESSED / "refinitiv_corp_returns.parquet"
+
+    if refinitiv_govt.exists() and refinitiv_corp.exists():
+        print("  Using Refinitiv iBoxx data")
+        govt = pd.read_parquet(refinitiv_govt)
+        corp = pd.read_parquet(refinitiv_corp)
+        return pd.concat([govt, corp], axis=1)
+    else:
+        print("  Using ETF proxy data (Refinitiv not available)")
+        return pd.read_parquet(DATA_PROCESSED / "etf_returns.parquet")
+
+
+def load_corp_oas() -> pd.Series:
+    """
+    Monthly corporate bond OAS spread (iBoxx EUR Corp IG).
+    Only available when Refinitiv data has been fetched.
+    Returns None if not available.
+    Coverage: Jan 2000 – Dec 2025
+    """
+    path = DATA_PROCESSED / "refinitiv_corp_oas.parquet"
+    if path.exists():
+        return pd.read_parquet(path)["corp_oas"]
+    else:
+        print("  OAS data not available — run fetch_and_save_refinitiv()")
+        return None
 
 
 def load_msci_europe() -> pd.Series:
@@ -45,16 +71,12 @@ def load_msci_europe() -> pd.Series:
 
 
 def load_all_asset_returns() -> pd.DataFrame:
-    """
-    Convenience loader: all ETF log returns + MSCI Europe aligned to common sample.
-    Normalizes both indices to month-end before joining to avoid date mismatch.
-    Columns: equity, govt_short, govt_mid, govt_long, corp_ig
-    Coverage: common sample only (rows with any NaN dropped, starts ~2009-05)
-    """
     etf  = load_etf_returns()
     msci = load_msci_europe()
 
-    # Normalize to month-end — ETF dates are month-start, MSCI dates are month-end
+    # Safety check — print available columns so mismatches are visible
+    print(f"  ETF columns available: {list(etf.columns)}")
+
     etf.index  = etf.index.to_period("M").to_timestamp("M")
     msci.index = msci.index.to_period("M").to_timestamp("M")
 
@@ -66,4 +88,6 @@ def load_all_asset_returns() -> pd.DataFrame:
         "corp_ig":    etf["corp_ig_logret"],
     }).dropna()
 
+    print(f"  Common sample: {df.index.min().date()} → {df.index.max().date()}")
+    print(f"  Observations: {len(df)}")
     return df

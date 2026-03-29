@@ -4,21 +4,91 @@ import pandas as pd
 from io import StringIO
 from pathlib import Path
 
-DATA_PROCESSED = Path("C:/Users/tuoma/PycharmProjectsfixedincome/data/processed")
-DATA_PROCESSED.mkdir(exist_ok=True)  # creates the folder if it doesn't exist
+# dynamic path
+BASE = Path(__file__).parent.parent  # goes up from data/ to project root
+DATA_RAW       = BASE / "data" / "raw"
+DATA_PROCESSED = BASE / "data" / "processed"
+DATA_PROCESSED.mkdir(exist_ok=True)
+DATA_RAW.mkdir(exist_ok=True)
 
 
 ##########################
 ### SELECT WHAT TO IMPORT!
 ##########################
 
-import_ecb_spot = False
-import_etf_data = True
-import_msci = False
+# ── SELECT WHAT TO IMPORT ─────────────────────────────────────
+import_ecb_spot     = False
+import_etf_data     = False
+import_msci         = False
+import_refinitiv    = True   # ← new flag
 
 ##########################
 
 
+
+# ── Refinitiv fetch function ──────────────────────────────────
+def fetch_and_save_refinitiv():
+    rd.open_session()
+    print("✓ Refinitiv session opened")
+
+    def fetch_series(tickers: dict) -> pd.DataFrame:
+        frames = {}
+        for name, ric in tickers.items():
+            print(f"  Fetching {name} ({ric})...")
+            try:
+                df = rd.get_history(
+                    universe=ric,
+                    fields=["TR.DAILYTOTALRETURN"],
+                    interval="monthly",
+                    start="2000-01-01",
+                    end="2025-12-31",
+                )
+                if df is None or df.empty:
+                    print(f"  ✗ {name}: empty response")
+                    continue
+
+                # Print actual columns so we know what Refinitiv returned
+                print(f"  Columns returned: {list(df.columns)}")
+                print(df.head(3))
+
+                # Take the first non-index column regardless of name
+                series = df.iloc[:, 0].rename(name)
+                frames[name] = series
+                print(f"  ✓ {name}: {series.index.min().date()} → {series.index.max().date()}")
+            except Exception as e:
+                print(f"  ✗ {name}: {e}")
+        return pd.DataFrame(frames)
+
+    # ── Fetch ─────────────────────────────────────────────────
+    govt_prices = fetch_series({
+        "govt_all": ".IBBEU0144",   # iBoxx EUR Sovereigns (all maturities)
+    })
+
+    corp_prices = fetch_series({
+        "corp_ig":  ".IBBEU003D",   # iBoxx EUR Corporates IG
+    })
+
+    if govt_prices.empty or corp_prices.empty:
+        print("✗ No data retrieved — check RICs and session")
+        rd.close_session()
+        return
+
+    # ── Compute log returns ───────────────────────────────────
+    all_prices  = pd.concat([govt_prices, corp_prices], axis=1)
+    all_returns = np.log(all_prices / all_prices.shift(1))
+    all_returns.columns = [c + "_logret" for c in all_prices.columns]
+
+    print(f"\nCoverage:")
+    print(all_prices.apply(lambda c:
+          f"{c.first_valid_index().date()} → {c.last_valid_index().date()}"))
+
+    # ── Save ──────────────────────────────────────────────────
+    all_prices.to_parquet(DATA_PROCESSED / "refinitiv_prices.parquet")
+    all_returns.to_parquet(DATA_PROCESSED / "refinitiv_returns.parquet")
+    print("✓ Saved refinitiv_prices.parquet and refinitiv_returns.parquet")
+
+    rd.close_session()
+    print("✓ Session closed")
 
 # ── ECB Spot Rates ────────────────────────────────────────────
 
@@ -160,3 +230,10 @@ else:
 
 if import_msci:
     fetch_and_save_msci()
+else:
+    print("⚠ Skipped msci data (import_msci_data = False)")
+
+if import_refinitiv:
+    fetch_and_save_refinitiv()
+else:
+    print("⚠ Skipped msci data (import_refinitiv_data = False)")

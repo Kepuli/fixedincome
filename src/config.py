@@ -12,7 +12,7 @@ DATA_PROCESSED = ROOT / "data" / "processed"
 OUTPUTS        = ROOT / "outputs"
 
 SUBPERIODS = {
-    "Pre-GFC (2004–2007)":         ("2004-09", "2007-07"),
+    "Pre-GFC (2000–2007)":         ("2000-01", "2007-07"),  # ← extended from 2004-09
     "Pre-Lehman (2007–2008)":      ("2007-08", "2008-08"),
     "Post-Lehman (2008–2009)":     ("2008-09", "2009-12"),
     "Sovereign Crisis (2010–12)":  ("2010-01", "2012-12"),
