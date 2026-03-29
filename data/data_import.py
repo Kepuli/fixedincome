@@ -21,8 +21,8 @@ DATA_RAW.mkdir(exist_ok=True)
 # ── SELECT WHAT TO IMPORT ─────────────────────────────────────
 import_ecb_spot     = False
 import_etf_data     = False
-import_msci         = False
-import_refinitiv    = True   # ← new flag
+import_msci         = True
+import_refinitiv    = False   # ← new flag
 import_msci_refinitiv = False
 
 ##########################

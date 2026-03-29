@@ -11,8 +11,10 @@ from src.data_loader import (
     load_msci_europe,
     load_govt_returns_refinitiv,
     load_corp_returns_refinitiv,
+    load_govt_duration_returns_refinitiv,
 )
 from scipy.signal import savgol_filter
+import csv
 
 
 # ══════════════════════════════════════════════════════════════
@@ -22,88 +24,105 @@ from scipy.signal import savgol_filter
 def load_all_returns() -> pd.DataFrame:
     """
     Load and align all return series for PORTFOLIO CONSTRUCTION.
-    Uses ETF data for maturity buckets (short/mid/long) since
-    Refinitiv maturity sub-indices are not yet available.
 
-    Columns after alignment:
-      equity     — MSCI Europe log return
-      govt_short — iShares Euro Govt 1-3Y log return
-      govt_mid   — iShares Euro Govt 7-10Y log return
-      govt_long  — iShares Euro Govt 15-30Y log return
-      corp_ig    — iShares EUR Corp Bond IG log return
-
-    Common sample starts at latest first-valid date (~2009-05).
+    Key fix:
+    - DO NOT dropna globally
+    - Keep full history
+    - Sort index and align safely
     """
-    etf  = load_etf_returns()
-    msci = load_msci_europe()
 
-    # Normalize both to month-end before joining
-    etf.index  = etf.index.to_period("M").to_timestamp("M")
+    msci = load_msci_europe()
+    govt_dur = load_govt_duration_returns_refinitiv()
+    corp_ref = load_corp_returns_refinitiv()
+
+    # Normalize all indices to month-end
     msci.index = msci.index.to_period("M").to_timestamp("M")
 
-    df = pd.DataFrame({
-        "equity":     msci,
-        "govt_short": etf["govt_short_logret"],
-        "govt_mid":   etf["govt_mid_logret"],
-        "govt_long":  etf["govt_long_logret"],
-        "corp_ig":    etf["corp_ig_logret"],
-    }).dropna()
+    if govt_dur is not None and corp_ref is not None:
+        govt_dur.index = govt_dur.index.to_period("M").to_timestamp("M")
+        corp_ref.index = corp_ref.index.to_period("M").to_timestamp("M")
 
-    print(f"\n── Q5 Portfolio Data Coverage (ETF) ──")
-    print(f"  Common sample: {df.index.min().date()} → {df.index.max().date()}")
-    print(f"  Observations:  {len(df)} monthly")
+        df = pd.DataFrame({
+            "equity":     msci,
+            "govt_short": govt_dur["govt_short_logret"],
+            "govt_mid":   govt_dur["govt_mid_logret"],
+            "govt_long":  govt_dur["govt_long_logret"],
+            "corp_ig":    corp_ref,
+        })
+
+        print(f"\n── Q5 Portfolio Data Coverage (Refinitiv iBoxx) ──")
+
+    else:
+        etf = load_etf_returns()
+        etf.index = etf.index.to_period("M").to_timestamp("M")
+
+        df = pd.DataFrame({
+            "equity":     msci,
+            "govt_short": etf["govt_short_logret"],
+            "govt_mid":   etf["govt_mid_logret"],
+            "govt_long":  etf["govt_long_logret"],
+            "corp_ig":    etf["corp_ig_logret"],
+        })
+
+        print(f"\n── Q5 Portfolio Data Coverage (ETF) ──")
+
+    df = df.sort_index()
+
+    print(f"  Full sample (no truncation): {df.index.min().date()} → {df.index.max().date()}")
+    print(f"  Observations (raw): {len(df)}")
 
     return df
 
 
 def load_regression_returns() -> tuple[pd.DataFrame, str]:
     """
-    Load return data for the SYSTEMATIC RISK REGRESSION.
-    Prefers Refinitiv iBoxx (2000–2025) for longer sample.
-    Falls back to ETF data if unavailable.
+    Load return data for regression.
 
-    Returns
-    -------
-    df     : DataFrame with columns ['equity', 'govt', 'corp_ig']
-    source : 'refinitiv' or 'etf'
+    Fix:
+    - Build full dataset first
+    - THEN dropna only on required columns
     """
+
     govt_ref = load_govt_returns_refinitiv()
     corp_ref = load_corp_returns_refinitiv()
     msci     = load_msci_europe()
 
+    # Normalize indices
+    msci.index = msci.index.to_period("M").to_timestamp("M")
+
     if govt_ref is not None and corp_ref is not None and len(govt_ref) > 0 and len(corp_ref) > 0:
-        # ── Refinitiv path: align all three series ──
-        # Normalize to month-end
-        msci.index     = msci.index.to_period("M").to_timestamp("M")
+
         govt_ref.index = govt_ref.index.to_period("M").to_timestamp("M")
         corp_ref.index = corp_ref.index.to_period("M").to_timestamp("M")
 
-        df = pd.DataFrame({
+        df_full = pd.DataFrame({
             "equity":  msci,
             "govt":    govt_ref,
             "corp_ig": corp_ref,
-        }).dropna()
+        }).sort_index()
+
+        # Only drop where regression actually needs data
+        df = df_full.dropna(subset=["equity", "govt", "corp_ig"])
 
         source = "refinitiv"
-        print(f"\n── Q5 Regression Data Coverage (Refinitiv iBoxx) ──")
-        print(f"  Sample: {df.index.min().date()} → {df.index.max().date()}")
-        print(f"  Observations: {len(df)} monthly")
-    else:
-        # ── ETF fallback: use govt_mid as government factor ──
-        etf  = load_etf_returns()
-        etf.index  = etf.index.to_period("M").to_timestamp("M")
-        msci.index = msci.index.to_period("M").to_timestamp("M")
 
-        df = pd.DataFrame({
+    else:
+        etf  = load_etf_returns()
+        etf.index = etf.index.to_period("M").to_timestamp("M")
+
+        df_full = pd.DataFrame({
             "equity":  msci,
             "govt":    etf["govt_mid_logret"],
             "corp_ig": etf["corp_ig_logret"],
-        }).dropna()
+        }).sort_index()
+
+        df = df_full.dropna(subset=["equity", "govt", "corp_ig"])
 
         source = "etf"
-        print(f"\n── Q5 Regression Data Coverage (ETF fallback) ──")
-        print(f"  Sample: {df.index.min().date()} → {df.index.max().date()}")
-        print(f"  Observations: {len(df)} monthly")
+
+    print(f"\n── Q5 Regression Data Coverage ({source.upper()}) ──")
+    print(f"  Sample: {df.index.min().date()} → {df.index.max().date()}")
+    print(f"  Observations: {len(df)} monthly")
 
     return df, source
 
@@ -150,14 +169,20 @@ MIXED_PORTFOLIOS = {
 
 
 def build_portfolio_returns(returns: pd.DataFrame, weights: dict) -> pd.Series:
-    """
-    Compute portfolio log return at each t as weighted sum of asset log returns.
-    r_portfolio_t = sum(w_i * r_i_t)
-    Assumes monthly rebalancing back to target weights.
-    """
-    port_ret = sum(w * returns[asset] for asset, w in weights.items()
-                   if asset in returns.columns)
-    return port_ret
+    df = pd.DataFrame({
+        asset: returns[asset] for asset in weights if asset in returns.columns
+    })
+
+    w = pd.Series(weights)
+
+    def row_port(row):
+        valid = row.notna()
+        if valid.sum() == 0:
+            return np.nan
+        w_adj = w[valid] / w[valid].sum()
+        return np.dot(row[valid], w_adj)
+
+    return df.apply(row_port, axis=1)
 
 
 def build_all_portfolios(returns: pd.DataFrame,
@@ -213,46 +238,28 @@ def compute_all_stats(port_returns: pd.DataFrame) -> pd.DataFrame:
 # ══════════════════════════════════════════════════════════════
 # 4. SYSTEMATIC RISK REGRESSION
 # ══════════════════════════════════════════════════════════════
+def run_systematic_risk_regression(reg_returns, source):
 
-def run_systematic_risk_regression(reg_returns: pd.DataFrame,
-                                    source: str) -> sm.regression.linear_model.RegressionResultsWrapper:
-    """
-    Fama-style factor regression to decompose corporate bond returns:
+    df = reg_returns.copy()
 
-    corp_ig_t = alpha + beta_equity * equity_t + beta_govt * govt_t + epsilon_t
+    # Force numeric
+    for col in ["equity", "govt", "corp_ig"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    When source='refinitiv', govt factor is the all-maturity iBoxx EUR Sovereigns
-    index (broader factor, 2000-2025). When source='etf', govt factor is the
-    7-10Y maturity bucket (2009-2025).
+    # Drop bad rows
+    df = df.dropna(subset=["equity", "govt", "corp_ig"])
 
-    Uses OLS with HC3 robust standard errors.
-    """
-    y = reg_returns["corp_ig"]
-    X = sm.add_constant(pd.DataFrame({
-        "equity": reg_returns["equity"],
-        "govt":   reg_returns["govt"],
-    }))
+    # Ensure float dtype
+    X = df[["equity", "govt"]].astype(float)
+    y = df["corp_ig"].astype(float)
+
+    X = sm.add_constant(X)
 
     model = sm.OLS(y, X).fit(cov_type="HC3")
 
-    govt_factor_desc = ("iBoxx EUR Sovereigns (all mat.)" if source == "refinitiv"
-                        else "Govt Mid 7-10Y ETF")
-
-    print(f"\n── Q5 Systematic Risk Regression ({source.upper()}) ──")
-    print(f"  Govt factor:      {govt_factor_desc}")
-    print(f"  Sample:           {reg_returns.index.min().date()} → "
-          f"{reg_returns.index.max().date()} ({len(reg_returns)} obs)")
-    print(f"  Alpha (monthly):  {model.params['const']:.4f}  "
-          f"(p={model.pvalues['const']:.3f})  "
-          f"ann. = {model.params['const']*12*100:.2f}%")
-    print(f"  Beta equity:      {model.params['equity']:.4f}  "
-          f"(p={model.pvalues['equity']:.3f})")
-    print(f"  Beta govt:        {model.params['govt']:.4f}  "
-          f"(p={model.pvalues['govt']:.3f})")
-    print(f"  R-squared:        {model.rsquared:.3f}")
+    print("Regression OK — n =", len(df))  # sanity
 
     return model
-
 
 def compute_rolling_equity_beta(returns: pd.DataFrame,
                                  window: int = 36) -> pd.Series:
@@ -331,6 +338,7 @@ def plot_bond_portfolios_cumulative(port_returns: pd.DataFrame) -> plt.Figure:
     fig, ax = plt.subplots(figsize=(14, 6))
 
     for (name, series), color in zip(port_returns.items(), colors):
+        series = series.dropna()  # ← ADD THIS
         cum = np.exp(series.cumsum())
         cum = cum / cum.iloc[0] * 100
         ax.plot(cum.index, cum, label=name.replace("\n", " "),
@@ -788,6 +796,7 @@ def run_all() -> dict:
       - Systematic risk regression uses Refinitiv iBoxx (longer sample)
         with ETF fallback if unavailable
     """
+    print("RUN_ALL EXECUTED NEW VERSION top")
     # ── Load data ───────────────────────────────────────────
     returns = load_all_returns()                          # ETF-based, for portfolios
     reg_returns, reg_source = load_regression_returns()   # Refinitiv-preferred, for regression
@@ -810,6 +819,8 @@ def run_all() -> dict:
 
     # ── Systematic risk (uses longer Refinitiv sample if available) ──
     model = run_systematic_risk_regression(reg_returns, reg_source)
+
+    print("UPDATED RUN EXECUTED  bottom")
 
     # ── Figures ─────────────────────────────────────────────
     return {

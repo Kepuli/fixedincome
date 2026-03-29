@@ -10,8 +10,15 @@ import src.Q3_duration_risk        as q3
 import src.Q4_credit_markets       as q4
 import src.Q5_equity_bond_portfolio as q5
 import matplotlib.pyplot as plt
+import csv
+import time
+import importlib
+import src.Q5_equity_bond_portfolio as q5
+import importlib
+import importlib
+import src.Q5_equity_bond_portfolio as q5
 
-OUTPUTS.mkdir(exist_ok=True)
+q5 = importlib.reload(q5)
 
 def save_figures(figures: dict):
     for filename, fig in figures.items():
@@ -25,7 +32,6 @@ def save_console_summary(outputs_path):
     Save all key numerical results to a clean CSV and formatted text file
     for easy copy-paste into the report.
     """
-    import csv
 
     # ── Q2 Regression Results ─────────────────────────────
     q2_rows = [
@@ -134,10 +140,10 @@ def run_module(label: str, module):
     except Exception as e:
         print(f"  ✗ failed — {e}\n")
 
-run_module("Q1: Yield Curve Dynamics",          q1)
-run_module("Q2: Forward Rates",                 q2)
-run_module("Q3: Duration Risk",                 q3)
-run_module("Q4: Credit Markets",                q4)
+#run_module("Q1: Yield Curve Dynamics",          q1)
+#run_module("Q2: Forward Rates",                 q2)
+#run_module("Q3: Duration Risk",                 q3)
+#run_module("Q4: Credit Markets",                q4)
 run_module("Q5: Portfolio & Systematic Risk",   q5)
 
 print("\n── Saving numerical summary tables ──")
