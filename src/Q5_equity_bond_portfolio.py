@@ -30,8 +30,9 @@ def load_all_returns() -> pd.DataFrame:
     - Keep full history
     - Sort index and align safely
     """
+    msci = load_msci_europe()                          # ← ADD THIS LINE
+    msci.index = msci.index.to_period("M").to_timestamp("M")  # ← AND THIS
 
-    msci = load_msci_europe()
     govt_dur = load_govt_duration_returns_refinitiv()
     corp_ref = load_corp_returns_refinitiv()
 
@@ -66,10 +67,10 @@ def load_all_returns() -> pd.DataFrame:
 
         print(f"\n── Q5 Portfolio Data Coverage (ETF) ──")
 
-    df = df.sort_index()
+    df = df.sort_index().dropna()  # ← need dropna back
 
-    print(f"  Full sample (no truncation): {df.index.min().date()} → {df.index.max().date()}")
-    print(f"  Observations (raw): {len(df)}")
+    print(f"  Common sample: {df.index.min().date()} → {df.index.max().date()}")
+    print(f"  Observations: {len(df)}")
 
     return df
 
