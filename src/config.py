@@ -20,7 +20,7 @@ SUBPERIODS = {
     "Hiking Cycle (2022–2025)":    ("2022-01", "2025-12"),
 }
 
-COLORS = ["#d4e6f1", "#d5f5e3", "#fdebd0", "#e8daef", "#fadbd8"]
+COLORS = ["#d4e6f1", "#d5f5e3", "#fdebd0", "#e8daef", "#fadbd8", "#d6eaf8"]
 
 MATURITIES     = [1, 2, 3, 5, 10, 30]
 MATURITY_COLS  = ["spot_1y","spot_2y","spot_3y",
