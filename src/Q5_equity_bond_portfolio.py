@@ -419,15 +419,15 @@ def extract_frontier(vols: np.ndarray, rets: np.ndarray) -> tuple:
     frontier = pd.DataFrame(frontier)
     return frontier["vol"].values, frontier["ret"].values
 
+def compute_exact_frontier(returns, assets, start_date=None, n_points=100):
 
-def compute_exact_frontier(returns, include_corp=True, n_points=100):
+    r = returns[assets]
 
-    if include_corp:
-        assets = ["equity", "govt_mid", "corp_ig"]
-    else:
-        assets = ["equity", "govt_mid"]
+    if start_date is not None:
+        r = r.loc[start_date:]
 
-    r = returns[assets].dropna()
+    r = r.dropna()
+
     mu = r.mean() * 12
     Sigma = r.cov() * 12
 
@@ -445,46 +445,41 @@ def compute_exact_frontier(returns, include_corp=True, n_points=100):
     target_returns = np.linspace(mu.min(), mu.max(), n_points)
 
     vols, rets = [], []
-
     prev_w = np.ones(n) / n
 
     for target in target_returns:
-
         constraints = constraints_base + [
             {'type': 'eq', 'fun': lambda w, target=target: portfolio_ret(w) - target}
         ]
 
-        res = minimize(
-            portfolio_vol,
-            prev_w,
-            bounds=bounds,
-            constraints=constraints
-        )
+        res = minimize(portfolio_vol, prev_w, bounds=bounds, constraints=constraints)
 
         if res.success:
             w_opt = res.x
             vols.append(portfolio_vol(w_opt) * 100)
             rets.append(portfolio_ret(w_opt) * 100)
             prev_w = w_opt
-        else:
-            prev_w = np.ones(n) / n
 
     return np.array(vols), np.array(rets)
-
 
 def plot_efficient_frontier(returns: pd.DataFrame) -> plt.Figure:
     fig, ax = plt.subplots(figsize=(10, 7))
 
-    # ── Monte Carlo clouds ──
-    vols_no, rets_no = compute_frontier_points(returns, include_corp=False)
-    vols_yes, rets_yes = compute_frontier_points(returns, include_corp=True)
+    # ✅ ADD THIS
+    common = returns[["equity", "govt_mid", "corp_ig"]].dropna()
+
+    # Monte Carlo
+    vols_no, rets_no = compute_frontier_points(common, include_corp=False)
+    vols_yes, rets_yes = compute_frontier_points(common, include_corp=True)
+
+    # Exact frontiers
+    fvols_no, frets_no = compute_exact_frontier(common, ["equity", "govt_mid"])
+    fvols_yes, frets_yes = compute_exact_frontier(common, ["equity", "govt_mid", "corp_ig"])
+
 
     ax.scatter(vols_no, rets_no, color="darkorange", alpha=0.05, s=3)
     ax.scatter(vols_yes, rets_yes, color="steelblue", alpha=0.08, s=4)
 
-    # ── Exact frontiers ──
-    fvols_no, frets_no = compute_exact_frontier(returns, include_corp=False)
-    fvols_yes, frets_yes = compute_exact_frontier(returns, include_corp=True)
 
     # Smooth
     frets_yes = savgol_filter(frets_yes, 11, 3)
@@ -718,11 +713,14 @@ def plot_drawdown_all(bond_ports: pd.DataFrame,
 
 
 def plot_frontiers_and_cals(returns: pd.DataFrame, rf: float = 0.0) -> plt.Figure:
+
     fig, ax = plt.subplots(figsize=(10, 7))
 
-    # ── Frontiers ──
-    fvols_no, frets_no = compute_exact_frontier(returns, include_corp=False)
-    fvols_yes, frets_yes = compute_exact_frontier(returns, include_corp=True)
+    # ✅ ADD THIS
+    common = returns[["equity", "govt_mid", "corp_ig"]].dropna()
+
+    fvols_no, frets_no = compute_exact_frontier(common, ["equity", "govt_mid"])
+    fvols_yes, frets_yes = compute_exact_frontier(common, ["equity", "govt_mid", "corp_ig"])
 
     ax.plot(fvols_no, frets_no,
             color="darkorange", linewidth=2,
@@ -758,14 +756,15 @@ def plot_frontiers_and_cals(returns: pd.DataFrame, rf: float = 0.0) -> plt.Figur
     # ── CAL lines ──
     x = np.linspace(0, max(fvols_yes) * 1.2, 200)
 
-    ax.plot(x, (ret_no / vol_no) * x,
-            linestyle="--", color="darkorange", alpha=0.8,
-            label="CAL (no corp)")
-
-    ax.plot(x, (ret_yes / vol_yes) * x,
+    ax.plot(x, (ret_no / vol_no) * x * 0.995,
             linestyle=(3, (6, 4)),
             color="steelblue", alpha=0.8,
             label="CAL (with corp)")
+
+    ax.plot(x, (ret_no / vol_no) * x,
+            linestyle="--", color="darkorange", alpha=1.0,
+            linewidth=2,
+            label="CAL (no corp)")
 
     # ── Mark tangency points ──
     ax.scatter(vol_no, ret_no, color="darkorange", s=80, zorder=5)
