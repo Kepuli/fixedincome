@@ -91,3 +91,45 @@ def load_all_asset_returns() -> pd.DataFrame:
     print(f"  Common sample: {df.index.min().date()} → {df.index.max().date()}")
     print(f"  Observations: {len(df)}")
     return df
+
+def load_govt_returns_refinitiv() -> pd.Series | None:
+    """
+    Monthly iBoxx EUR Sovereigns (all maturities) log returns.
+    Coverage: Jan 2000 – Dec 2025
+    Returns None if Refinitiv data not available.
+    """
+    # Try separate file first (used by load_etf_returns)
+    path = DATA_PROCESSED / "refinitiv_govt_returns.parquet"
+    if path.exists():
+        df = pd.read_parquet(path)
+        # Return first column as Series
+        return df.iloc[:, 0]
+
+    # Try combined file (from data_import.py)
+    path2 = DATA_PROCESSED / "refinitiv_returns.parquet"
+    if path2.exists():
+        df = pd.read_parquet(path2)
+        if "govt_all_logret" in df.columns:
+            return df["govt_all_logret"]
+
+    return None
+
+
+def load_corp_returns_refinitiv() -> pd.Series | None:
+    """
+    Monthly iBoxx EUR Corporate IG log returns.
+    Coverage: Jan 2000 – Dec 2025
+    Returns None if Refinitiv data not available.
+    """
+    path = DATA_PROCESSED / "refinitiv_corp_returns.parquet"
+    if path.exists():
+        df = pd.read_parquet(path)
+        return df.iloc[:, 0]
+
+    path2 = DATA_PROCESSED / "refinitiv_returns.parquet"
+    if path2.exists():
+        df = pd.read_parquet(path2)
+        if "corp_ig_logret" in df.columns:
+            return df["corp_ig_logret"]
+
+    return None

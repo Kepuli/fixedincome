@@ -2,8 +2,15 @@
 # ─────────────────────────────────────────────
 # Q4: Realized returns and risk of corporate bonds versus government bonds
 # Q5 (partial): Credit excess return analysis and systematic risk setup
-# INPUTS:  data/processed/etf_prices.parquet
-#          data/processed/etf_returns.parquet
+#
+# UPDATE (March 2026):
+#   Now uses Refinitiv iBoxx EUR Sovereigns + Corporates indices (2000–2025)
+#   as primary data source. Falls back to ETF data if Refinitiv unavailable.
+#   Full Sample period updated from 2004-09 to 2000-01.
+#
+# INPUTS:  data/processed/refinitiv_returns.parquet  (preferred)
+#          data/processed/etf_prices.parquet          (fallback)
+#          data/processed/etf_returns.parquet         (fallback)
 # OUTPUTS: Q4_cumulative_returns.png
 #          Q4_credit_excess.png
 #          Q4_summary_table.png
@@ -17,18 +24,80 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import statsmodels.api as sm
 from src.config import SUBPERIODS, COLORS
-from src.data_loader import load_etf_prices, load_etf_returns
+from src.data_loader import (
+    load_etf_prices,
+    load_etf_returns,
+    load_govt_returns_refinitiv,
+    load_corp_returns_refinitiv,
+)
+
+
+# ── 0. Data loading — Refinitiv preferred, ETF fallback ──────
+
+def load_q4_returns() -> tuple[pd.DataFrame, str]:
+    """
+    Load monthly log returns for Q4 analysis.
+
+    Returns
+    -------
+    returns : DataFrame with columns ['govt_logret', 'corp_ig_logret']
+    source  : 'refinitiv' or 'etf' — used for chart labels and sample dates
+    """
+    govt_ref = load_govt_returns_refinitiv()
+    corp_ref = load_corp_returns_refinitiv()
+
+    if govt_ref is not None and corp_ref is not None and len(govt_ref) > 0 and len(corp_ref) > 0:
+        # ── Refinitiv iBoxx path (2000–2025) ──
+        df = pd.DataFrame({
+            "govt_logret":    govt_ref,
+            "corp_ig_logret": corp_ref,
+        }).dropna()
+        source = "refinitiv"
+        print(f"\n  Q4 data source: Refinitiv iBoxx")
+        print(f"  Sample: {df.index.min().date()} → {df.index.max().date()}  "
+              f"({len(df)} months)")
+    else:
+        # ── ETF fallback path (2009–2025) ──
+        etf = load_etf_returns()
+        df = etf[["govt_mid_logret", "corp_ig_logret"]].dropna()
+        df = df.rename(columns={"govt_mid_logret": "govt_logret"})
+        source = "etf"
+        print(f"\n  Q4 data source: ETF (Refinitiv unavailable)")
+        print(f"  Sample: {df.index.min().date()} → {df.index.max().date()}  "
+              f"({len(df)} months)")
+
+    return df, source
+
+
+# ── Label helpers (adjust for data source) ────────────────────
+
+def _govt_label(source: str) -> str:
+    if source == "refinitiv":
+        return "Govt Sovereigns (iBoxx)"
+    return "Govt Mid 7-10Y (IBGM)"
+
+
+def _corp_label(source: str) -> str:
+    if source == "refinitiv":
+        return "Corporate IG (iBoxx)"
+    return "Corporate IG (IEAC)"
+
+
+def _full_sample_dates(returns: pd.DataFrame) -> tuple[str, str]:
+    """Derive full sample start/end from the actual data."""
+    start = returns.index.min().strftime("%Y-%m")
+    end   = returns.index.max().strftime("%Y-%m")
+    return start, end
 
 
 # ── 1. Core calculations ──────────────────────────────────────
 
 def compute_credit_excess(returns: pd.DataFrame) -> pd.Series:
     """
-    Credit excess return = corporate log return minus govt mid log return.
+    Credit excess return = corporate log return minus govt log return.
     Isolates credit risk premium by stripping out (approximate) duration component.
-    Both series have similar duration (~7-8Y) so the difference is predominantly credit.
     """
-    excess = returns["corp_ig_logret"] - returns["govt_mid_logret"]
+    excess = returns["corp_ig_logret"] - returns["govt_logret"]
     excess.name = "credit_excess"
     return excess.dropna()
 
@@ -36,10 +105,6 @@ def compute_credit_excess(returns: pd.DataFrame) -> pd.Series:
 def compute_stats(returns: pd.Series, periods_per_year: int = 12) -> dict:
     """
     Annualized return, vol, Sharpe, and max drawdown from monthly log returns.
-    Ann. Return = mean(r) * 12
-    Ann. Vol    = std(r) * sqrt(12)
-    Sharpe      = Ann.Return / Ann.Vol  (no rf deduction — comparing within bonds)
-    Max DD      = min((cum_t - rolling_max_t) / rolling_max_t)
     """
     r = returns.dropna()
     if len(r) < 6:
@@ -62,16 +127,22 @@ def compute_stats(returns: pd.Series, periods_per_year: int = 12) -> dict:
     }
 
 
-def compute_summary_table(returns: pd.DataFrame) -> pd.DataFrame:
+def compute_summary_table(returns: pd.DataFrame, source: str) -> pd.DataFrame:
     """
-    Side-by-side stats for corp_ig vs govt_mid over full sample and sub-periods.
+    Side-by-side stats for corp vs govt over full sample and sub-periods.
+    Full sample dates derived from actual data (2000-01 for Refinitiv, 2009 for ETF).
     """
-    periods = {"Full Sample": ("2004-09", "2025-12"), **SUBPERIODS}
-    rows = []
+    full_start, full_end = _full_sample_dates(returns)
+    periods = {f"Full Sample ({full_start[:4]}–{full_end[:4]})": (full_start, full_end)}
+    periods.update(SUBPERIODS)
 
+    govt_lbl = _govt_label(source)
+    corp_lbl = _corp_label(source)
+
+    rows = []
     for period_label, (start, end) in periods.items():
-        for asset_label, col in [("Corporate IG", "corp_ig_logret"),
-                                  ("Govt Mid (7-10Y)", "govt_mid_logret")]:
+        for asset_label, col in [(corp_lbl, "corp_ig_logret"),
+                                  (govt_lbl, "govt_logret")]:
             if col not in returns.columns:
                 continue
             r = returns.loc[start:end, col].dropna()
@@ -83,34 +154,30 @@ def compute_summary_table(returns: pd.DataFrame) -> pd.DataFrame:
 
 # ── 2. Plots ──────────────────────────────────────────────────
 
-def plot_cumulative_returns(prices: pd.DataFrame) -> plt.Figure:
+def plot_cumulative_returns(returns: pd.DataFrame, source: str) -> plt.Figure:
     """
-    Exhibit 1: Cumulative total return — corporate IG vs govt mid.
+    Exhibit 1: Cumulative total return — corporate IG vs government.
+    Computed from log returns (works for both Refinitiv and ETF data).
     Both indexed to 100 at their first common date.
     """
-    corp = prices["corp_ig"].dropna()
-    govt = prices["govt_mid"].dropna()
-
-    # Align to common start date
-    start = max(corp.index.min(), govt.index.min())
-    corp  = corp.loc[start:]
-    govt  = govt.loc[start:]
-
-    corp_idx = corp / corp.iloc[0] * 100
-    govt_idx = govt / govt.iloc[0] * 100
-
     fig, ax = plt.subplots(figsize=(14, 6))
 
-    ax.plot(corp_idx.index, corp_idx, label="Corporate IG (IEAC)",
-            color="steelblue", linewidth=2)
-    ax.plot(govt_idx.index, govt_idx, label="Govt Mid 7-10Y (IBGM)",
-            color="darkorange", linewidth=2)
+    for col, label, color in [
+        ("corp_ig_logret", _corp_label(source),  "steelblue"),
+        ("govt_logret",    _govt_label(source),   "darkorange"),
+    ]:
+        r = returns[col].dropna()
+        cum = np.exp(r.cumsum())
+        cum = cum / cum.iloc[0] * 100
+        ax.plot(cum.index, cum, label=label, color=color, linewidth=2)
 
     # Sub-period shading
     for (label, (s, e)), color in zip(SUBPERIODS.items(), COLORS):
         ax.axvspan(pd.Timestamp(s), pd.Timestamp(e), alpha=0.15, color=color)
 
-    ax.set_title("Cumulative Total Returns: Corporate IG vs Government Bonds",
+    full_start, full_end = _full_sample_dates(returns)
+    ax.set_title(f"Cumulative Total Returns: Corporate IG vs Government Bonds "
+                 f"({full_start[:4]}–{full_end[:4]})",
                  fontsize=13, fontweight="bold")
     ax.set_ylabel("Indexed Return (100 = start)")
     ax.legend(fontsize=10)
@@ -123,8 +190,6 @@ def plot_cumulative_returns(prices: pd.DataFrame) -> plt.Figure:
 def plot_credit_excess(returns: pd.DataFrame) -> plt.Figure:
     """
     Exhibit 2: Credit excess return — monthly bars + cumulative line.
-    Monthly bars show episodic nature of credit premium.
-    Cumulative line shows long-run trend — upward slope = persistent premium.
     """
     excess = compute_credit_excess(returns) * 100  # to percent
 
@@ -136,7 +201,7 @@ def plot_credit_excess(returns: pd.DataFrame) -> plt.Figure:
     ax1.axhline(0, color="black", linewidth=0.8)
     ax1.axhline(excess.mean(), color="steelblue", linewidth=1.5,
                 linestyle="--", label=f"Mean = {excess.mean():.2f}%/month")
-    ax1.set_title("Monthly Credit Excess Return (Corp IG minus Govt Mid)",
+    ax1.set_title("Monthly Credit Excess Return (Corp IG minus Govt)",
                   fontsize=12, fontweight="bold")
     ax1.set_ylabel("Monthly Excess Return (%)")
     ax1.legend(fontsize=9)
@@ -164,17 +229,15 @@ def plot_credit_excess(returns: pd.DataFrame) -> plt.Figure:
     return fig
 
 
-def plot_drawdown(returns: pd.DataFrame) -> plt.Figure:
+def plot_drawdown(returns: pd.DataFrame, source: str) -> plt.Figure:
     """
-    Exhibit 3: Drawdown comparison — corp vs govt mid.
-    Reveals asymmetric risk profile of credit: slow grind up, sudden crashes.
-    Key episodes: GFC 2008, Sovereign Crisis 2011, COVID 2020, Hiking 2022.
+    Exhibit 3: Drawdown comparison — corp vs govt.
     """
     fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
 
     assets = [
-        ("Corporate IG",     "corp_ig_logret",  "steelblue"),
-        ("Govt Mid (7-10Y)", "govt_mid_logret", "darkorange"),
+        (_corp_label(source), "corp_ig_logret", "steelblue"),
+        (_govt_label(source), "govt_logret",    "darkorange"),
     ]
 
     for ax, (label, col, color) in zip(axes, assets):
@@ -200,23 +263,24 @@ def plot_drawdown(returns: pd.DataFrame) -> plt.Figure:
                     fontsize=8, color=color,
                     arrowprops=dict(arrowstyle="->", color=color))
 
-    fig.suptitle("Drawdown Comparison: Corporate IG vs Government Bonds",
+    full_start, full_end = _full_sample_dates(returns)
+    fig.suptitle(f"Drawdown Comparison: Corporate IG vs Government Bonds "
+                 f"({full_start[:4]}–{full_end[:4]})",
                  fontsize=13, fontweight="bold")
     fig.tight_layout()
     return fig
 
 
-def plot_rolling_sharpe(returns: pd.DataFrame, window: int = 36) -> plt.Figure:
+def plot_rolling_sharpe(returns: pd.DataFrame, source: str,
+                        window: int = 36) -> plt.Figure:
     """
-    Exhibit 4: Rolling 36-month Sharpe ratio — corp vs govt mid.
-    Shows whether the risk-adjusted case for corporate bonds is stable or regime-dependent.
-    Rolling Sharpe = (mean(r) * 12) / (std(r) * sqrt(12))  over trailing 36 months.
+    Exhibit 4: Rolling 36-month Sharpe ratio — corp vs govt.
     """
     fig, ax = plt.subplots(figsize=(14, 5))
 
     assets = [
-        ("Corporate IG",     "corp_ig_logret",  "steelblue"),
-        ("Govt Mid (7-10Y)", "govt_mid_logret", "darkorange"),
+        (_corp_label(source), "corp_ig_logret", "steelblue"),
+        (_govt_label(source), "govt_logret",    "darkorange"),
     ]
 
     for label, col, color in assets:
@@ -249,7 +313,6 @@ def plot_rolling_sharpe(returns: pd.DataFrame, window: int = 36) -> plt.Figure:
 def plot_summary_table(df_table: pd.DataFrame) -> plt.Figure:
     """
     Exhibit 5: Summary statistics table — corp vs govt, full sample + sub-periods.
-    Sharpe cells colour-coded: green > 0.5, orange 0-0.5, red < 0.
     """
     fig, ax = plt.subplots(figsize=(13, 7))
     ax.axis("off")
@@ -276,7 +339,6 @@ def plot_summary_table(df_table: pd.DataFrame) -> plt.Figure:
     # Row styling — alternate shading, colour Sharpe column
     sharpe_col = display_cols.index("Sharpe")
     ret_col    = display_cols.index("Ann. Return (%)")
-    dd_col     = display_cols.index("Max Drawdown (%)")
 
     for i in range(1, len(df_table) + 1):
         # Alternate row background
@@ -308,10 +370,13 @@ def plot_summary_table(df_table: pd.DataFrame) -> plt.Figure:
 
 # ── 3. Console summary ────────────────────────────────────────
 
-def print_console_summary(returns: pd.DataFrame):
+def print_console_summary(returns: pd.DataFrame, source: str):
     """Print key numbers to console for quick inspection."""
     excess = compute_credit_excess(returns) * 100
-    print("\n── Q4 Credit Excess Return Summary ──")
+    full_start, full_end = _full_sample_dates(returns)
+
+    print(f"\n── Q4 Credit Excess Return Summary ({source.upper()}) ──")
+    print(f"  Sample:               {full_start} → {full_end}")
     print(f"  Full sample mean:     {excess.mean():.3f}% / month  "
           f"({excess.mean()*12:.2f}% annualized)")
     print(f"  Full sample vol:      {excess.std():.3f}% / month")
@@ -332,17 +397,16 @@ def print_console_summary(returns: pd.DataFrame):
 
 def run_all() -> dict:
     """Run full Q4 analysis. Returns dict of {filename: Figure}."""
-    prices  = load_etf_prices()
-    returns = load_etf_returns()
+    returns, source = load_q4_returns()
 
-    print_console_summary(returns)
+    print_console_summary(returns, source)
 
-    df_table = compute_summary_table(returns)
+    df_table = compute_summary_table(returns, source)
 
     return {
-        "Q4_cumulative_returns.png": plot_cumulative_returns(prices),
+        "Q4_cumulative_returns.png": plot_cumulative_returns(returns, source),
         "Q4_credit_excess.png":      plot_credit_excess(returns),
-        "Q4_drawdown.png":           plot_drawdown(returns),
-        "Q4_rolling_sharpe.png":     plot_rolling_sharpe(returns),
+        "Q4_drawdown.png":           plot_drawdown(returns, source),
+        "Q4_rolling_sharpe.png":     plot_rolling_sharpe(returns, source),
         "Q4_summary_table.png":      plot_summary_table(df_table),
     }

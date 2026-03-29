@@ -1,4 +1,3 @@
-
 from scipy.optimize import minimize
 import pandas as pd
 import numpy as np
@@ -7,7 +6,12 @@ import matplotlib.gridspec as gridspec
 import seaborn as sns
 import statsmodels.api as sm
 from src.config import SUBPERIODS, COLORS
-from src.data_loader import load_etf_returns, load_msci_europe
+from src.data_loader import (
+    load_etf_returns,
+    load_msci_europe,
+    load_govt_returns_refinitiv,
+    load_corp_returns_refinitiv,
+)
 from scipy.signal import savgol_filter
 
 
@@ -17,17 +21,16 @@ from scipy.signal import savgol_filter
 
 def load_all_returns() -> pd.DataFrame:
     """
-    Load and align all return series into a single DataFrame.
+    Load and align all return series for PORTFOLIO CONSTRUCTION.
+    Uses ETF data for maturity buckets (short/mid/long) since
+    Refinitiv maturity sub-indices are not yet available.
+
     Columns after alignment:
       equity     — MSCI Europe log return
       govt_short — iShares Euro Govt 1-3Y log return
       govt_mid   — iShares Euro Govt 7-10Y log return
       govt_long  — iShares Euro Govt 15-30Y log return
       corp_ig    — iShares EUR Corp Bond IG log return
-
-    FIX: ETF dates are month-start (2008-01-01), MSCI dates are month-end
-    (2008-01-31). Normalizing both to month-end via to_period('M') before
-    joining prevents all-NaN rows from the index mismatch.
 
     Common sample starts at latest first-valid date (~2009-05).
     """
@@ -46,12 +49,63 @@ def load_all_returns() -> pd.DataFrame:
         "corp_ig":    etf["corp_ig_logret"],
     }).dropna()
 
-    print(f"\n── Q5 Data Coverage ──")
+    print(f"\n── Q5 Portfolio Data Coverage (ETF) ──")
     print(f"  Common sample: {df.index.min().date()} → {df.index.max().date()}")
     print(f"  Observations:  {len(df)} monthly")
-    print(f"  NaN counts:\n{df.isna().sum()}")
 
     return df
+
+
+def load_regression_returns() -> tuple[pd.DataFrame, str]:
+    """
+    Load return data for the SYSTEMATIC RISK REGRESSION.
+    Prefers Refinitiv iBoxx (2000–2025) for longer sample.
+    Falls back to ETF data if unavailable.
+
+    Returns
+    -------
+    df     : DataFrame with columns ['equity', 'govt', 'corp_ig']
+    source : 'refinitiv' or 'etf'
+    """
+    govt_ref = load_govt_returns_refinitiv()
+    corp_ref = load_corp_returns_refinitiv()
+    msci     = load_msci_europe()
+
+    if govt_ref is not None and corp_ref is not None and len(govt_ref) > 0 and len(corp_ref) > 0:
+        # ── Refinitiv path: align all three series ──
+        # Normalize to month-end
+        msci.index     = msci.index.to_period("M").to_timestamp("M")
+        govt_ref.index = govt_ref.index.to_period("M").to_timestamp("M")
+        corp_ref.index = corp_ref.index.to_period("M").to_timestamp("M")
+
+        df = pd.DataFrame({
+            "equity":  msci,
+            "govt":    govt_ref,
+            "corp_ig": corp_ref,
+        }).dropna()
+
+        source = "refinitiv"
+        print(f"\n── Q5 Regression Data Coverage (Refinitiv iBoxx) ──")
+        print(f"  Sample: {df.index.min().date()} → {df.index.max().date()}")
+        print(f"  Observations: {len(df)} monthly")
+    else:
+        # ── ETF fallback: use govt_mid as government factor ──
+        etf  = load_etf_returns()
+        etf.index  = etf.index.to_period("M").to_timestamp("M")
+        msci.index = msci.index.to_period("M").to_timestamp("M")
+
+        df = pd.DataFrame({
+            "equity":  msci,
+            "govt":    etf["govt_mid_logret"],
+            "corp_ig": etf["corp_ig_logret"],
+        }).dropna()
+
+        source = "etf"
+        print(f"\n── Q5 Regression Data Coverage (ETF fallback) ──")
+        print(f"  Sample: {df.index.min().date()} → {df.index.max().date()}")
+        print(f"  Observations: {len(df)} monthly")
+
+    return df, source
 
 
 # ══════════════════════════════════════════════════════════════
@@ -122,13 +176,6 @@ def build_all_portfolios(returns: pd.DataFrame,
 def compute_stats(returns: pd.Series, periods_per_year: int = 12) -> dict:
     """
     Full statistics suite for a monthly log return series.
-
-    Ann. Return  = mean(r) * 12
-    Ann. Vol     = std(r)  * sqrt(12)
-    Sharpe       = Ann.Return / Ann.Vol   (no rf — comparing within asset classes)
-    Calmar       = Ann.Return / |Max Drawdown|   (reward per unit of tail risk)
-    Skewness     = E[(r-mean)^3] / std^3  (negative = left tail = crash risk)
-    Max Drawdown = min((cum_t - rolling_max_t) / rolling_max_t)
     """
     r = returns.dropna()
     if len(r) < 6:
@@ -167,43 +214,42 @@ def compute_all_stats(port_returns: pd.DataFrame) -> pd.DataFrame:
 # 4. SYSTEMATIC RISK REGRESSION
 # ══════════════════════════════════════════════════════════════
 
-def run_systematic_risk_regression(returns: pd.DataFrame) -> dict:
+def run_systematic_risk_regression(reg_returns: pd.DataFrame,
+                                    source: str) -> sm.regression.linear_model.RegressionResultsWrapper:
     """
     Fama-style factor regression to decompose corporate bond returns:
 
-    corp_ig_t = alpha + beta_equity * equity_t + beta_govt * govt_mid_t + epsilon_t
+    corp_ig_t = alpha + beta_equity * equity_t + beta_govt * govt_t + epsilon_t
 
-    Interpretation:
-      beta_equity > 0  → corp bonds have equity-like systematic risk
-                          (lose value when equity markets sell off)
-      beta_govt   ~ 1  → corp bond returns largely reflect duration risk
-      alpha > 0        → residual credit premium after stripping factor exposures
-      alpha = 0        → credit premium fully explained by factor exposures
+    When source='refinitiv', govt factor is the all-maturity iBoxx EUR Sovereigns
+    index (broader factor, 2000-2025). When source='etf', govt factor is the
+    7-10Y maturity bucket (2009-2025).
 
-    This links to Asvanunt & Richardson (2017): credit premium is compensation
-    for systematic risk, not a free diversification benefit.
-
-    Uses OLS with HC3 robust standard errors (heteroskedasticity-consistent)
-    since financial return series typically show volatility clustering.
+    Uses OLS with HC3 robust standard errors.
     """
-    y = returns["corp_ig"]
+    y = reg_returns["corp_ig"]
     X = sm.add_constant(pd.DataFrame({
-        "equity":   returns["equity"],
-        "govt_mid": returns["govt_mid"],
+        "equity": reg_returns["equity"],
+        "govt":   reg_returns["govt"],
     }))
 
     model = sm.OLS(y, X).fit(cov_type="HC3")
 
-    print("\n── Q5 Systematic Risk Regression ──")
+    govt_factor_desc = ("iBoxx EUR Sovereigns (all mat.)" if source == "refinitiv"
+                        else "Govt Mid 7-10Y ETF")
+
+    print(f"\n── Q5 Systematic Risk Regression ({source.upper()}) ──")
+    print(f"  Govt factor:      {govt_factor_desc}")
+    print(f"  Sample:           {reg_returns.index.min().date()} → "
+          f"{reg_returns.index.max().date()} ({len(reg_returns)} obs)")
     print(f"  Alpha (monthly):  {model.params['const']:.4f}  "
           f"(p={model.pvalues['const']:.3f})  "
           f"ann. = {model.params['const']*12*100:.2f}%")
     print(f"  Beta equity:      {model.params['equity']:.4f}  "
           f"(p={model.pvalues['equity']:.3f})")
-    print(f"  Beta govt:        {model.params['govt_mid']:.4f}  "
-          f"(p={model.pvalues['govt_mid']:.3f})")
+    print(f"  Beta govt:        {model.params['govt']:.4f}  "
+          f"(p={model.pvalues['govt']:.3f})")
     print(f"  R-squared:        {model.rsquared:.3f}")
-    print(f"  Observations:     {int(model.nobs)}")
 
     return model
 
@@ -213,6 +259,9 @@ def compute_rolling_equity_beta(returns: pd.DataFrame,
     """
     Rolling beta of corp_ig on equity over trailing window months.
     beta_t = cov(corp, equity) / var(equity)  over window t-w:t
+
+    Works with both portfolio data (has 'corp_ig' col) and regression
+    data (also has 'corp_ig' col).
     """
     rolling_beta = pd.Series(index=returns.index, dtype=float)
 
@@ -235,13 +284,6 @@ def compute_frontier_points(returns: pd.DataFrame,
     """
     Monte Carlo simulation of random portfolio weights to approximate
     the efficient frontier.
-
-    For each random portfolio:
-      r_p = w' * mean_returns * 12          (annualized)
-      sigma_p = sqrt(w' * Sigma * w * 12)   (annualized)
-
-    Returns arrays of (volatilities, returns) for plotting.
-    Sigma = covariance matrix of monthly log returns.
     """
     if include_corp:
         assets = ["equity", "govt_mid", "corp_ig"]
@@ -249,15 +291,15 @@ def compute_frontier_points(returns: pd.DataFrame,
         assets = ["equity", "govt_mid"]
 
     r     = returns[assets].dropna()
-    mu    = r.mean() * 12           # annualized mean log returns
-    sigma = r.cov()  * 12           # annualized covariance matrix
+    mu    = r.mean() * 12
+    sigma = r.cov()  * 12
 
     port_vols = []
     port_rets = []
 
     np.random.seed(42)
     for _ in range(n_portfolios):
-        w = np.random.dirichlet(np.ones(len(assets)))  # random weights summing to 1
+        w = np.random.dirichlet(np.ones(len(assets)))
         p_ret  = np.dot(w, mu)
         p_vol  = np.sqrt(w @ sigma.values @ w)
         port_rets.append(p_ret * 100)
@@ -284,7 +326,6 @@ def _cumulative_index(log_returns: pd.Series) -> pd.Series:
 def plot_bond_portfolios_cumulative(port_returns: pd.DataFrame) -> plt.Figure:
     """
     Exhibit 1 — Part 1: Cumulative returns of bond-only portfolios.
-    Shows whether adding corporate bonds improves the bond portfolio.
     """
     colors = ["darkorange", "steelblue", "green"]
     fig, ax = plt.subplots(figsize=(14, 6))
@@ -309,7 +350,6 @@ def plot_bond_portfolios_cumulative(port_returns: pd.DataFrame) -> plt.Figure:
 def plot_diversified_cumulative(port_returns: pd.DataFrame) -> plt.Figure:
     """
     Exhibit 2 — Part 2: Cumulative returns of bond+equity portfolios.
-    Shows whether corporate allocation improves the diversified portfolio.
     """
     colors = ["steelblue", "darkorange", "green"]
     fig, ax = plt.subplots(figsize=(14, 6))
@@ -334,11 +374,9 @@ def plot_diversified_cumulative(port_returns: pd.DataFrame) -> plt.Figure:
 def plot_correlation_heatmap(returns: pd.DataFrame) -> plt.Figure:
     """
     Exhibit 3: Correlation matrix of all asset returns.
-    Low/negative corp-equity correlation = diversification benefit.
-    High correlation during stress = diversification breakdown.
     """
     labels = {
-        "equity":     "Equity\n(MSCI World)",
+        "equity":     "Equity\n(MSCI Europe)",
         "govt_short": "Govt Short\n(1-3Y)",
         "govt_mid":   "Govt Mid\n(7-10Y)",
         "govt_long":  "Govt Long\n(15-30Y)",
@@ -347,7 +385,7 @@ def plot_correlation_heatmap(returns: pd.DataFrame) -> plt.Figure:
     corr = returns.rename(columns=labels).corr()
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    mask = np.triu(np.ones_like(corr, dtype=bool), k=1)  # upper triangle mask
+    mask = np.triu(np.ones_like(corr, dtype=bool), k=1)
     sns.heatmap(corr, annot=True, fmt=".2f", cmap="RdYlGn",
                 vmin=-1, vmax=1, center=0, ax=ax,
                 linewidths=0.5, annot_kws={"size": 10})
@@ -356,15 +394,12 @@ def plot_correlation_heatmap(returns: pd.DataFrame) -> plt.Figure:
     fig.tight_layout()
     return fig
 
+
 def extract_frontier(vols: np.ndarray, rets: np.ndarray) -> tuple:
-    """
-    Extract efficient frontier (upper envelope):
-    For each volatility level, keep the max return.
-    """
+    """Extract efficient frontier (upper envelope)."""
     df = pd.DataFrame({"vol": vols, "ret": rets})
     df = df.sort_values("vol")
 
-    # Keep only points that improve return
     frontier = []
     max_ret = -np.inf
 
@@ -376,7 +411,6 @@ def extract_frontier(vols: np.ndarray, rets: np.ndarray) -> tuple:
     frontier = pd.DataFrame(frontier)
     return frontier["vol"].values, frontier["ret"].values
 
-from scipy.optimize import minimize
 
 def compute_exact_frontier(returns, include_corp=True, n_points=100):
 
@@ -404,7 +438,6 @@ def compute_exact_frontier(returns, include_corp=True, n_points=100):
 
     vols, rets = [], []
 
-    # ✅ initialize once
     prev_w = np.ones(n) / n
 
     for target in target_returns:
@@ -415,22 +448,17 @@ def compute_exact_frontier(returns, include_corp=True, n_points=100):
 
         res = minimize(
             portfolio_vol,
-            prev_w,  # ✅ warm start
+            prev_w,
             bounds=bounds,
             constraints=constraints
         )
 
         if res.success:
             w_opt = res.x
-
             vols.append(portfolio_vol(w_opt) * 100)
             rets.append(portfolio_ret(w_opt) * 100)
-
-            # ✅ update for next iteration
             prev_w = w_opt
-
         else:
-            # fallback (optional but robust)
             prev_w = np.ones(n) / n
 
     return np.array(vols), np.array(rets)
@@ -439,43 +467,32 @@ def compute_exact_frontier(returns, include_corp=True, n_points=100):
 def plot_efficient_frontier(returns: pd.DataFrame) -> plt.Figure:
     fig, ax = plt.subplots(figsize=(10, 7))
 
-    # ── Monte Carlo clouds (keep for intuition) ──
+    # ── Monte Carlo clouds ──
     vols_no, rets_no = compute_frontier_points(returns, include_corp=False)
     vols_yes, rets_yes = compute_frontier_points(returns, include_corp=True)
 
     ax.scatter(vols_no, rets_no, color="darkorange", alpha=0.05, s=3)
     ax.scatter(vols_yes, rets_yes, color="steelblue", alpha=0.08, s=4)
 
-    # ── EXACT FRONTIERS (this is the upgrade) ──
+    # ── Exact frontiers ──
     fvols_no, frets_no = compute_exact_frontier(returns, include_corp=False)
     fvols_yes, frets_yes = compute_exact_frontier(returns, include_corp=True)
 
-    #smooth
+    # Smooth
     frets_yes = savgol_filter(frets_yes, 11, 3)
 
-    # 2-asset frontier
-    ax.plot(
-        fvols_no,
-        frets_no,
-        color="darkorange",
-        linewidth=1.5,
-        label="Frontier: Equity + Govt"
-    )
+    ax.plot(fvols_no, frets_no,
+            color="darkorange", linewidth=1.5,
+            label="Frontier: Equity + Govt")
 
-    # 3-asset frontier
-    ax.plot(
-        fvols_yes,
-        frets_yes,
-        color="steelblue",
-        linewidth=1.5,
-        label="Frontier: Equity + Govt + Corp"
-    )
+    ax.plot(fvols_yes, frets_yes,
+            color="steelblue", linewidth=1.5,
+            label="Frontier: Equity + Govt + Corp")
 
-    # ── Sharpe coloring ONLY for 3-asset cloud ──
+    # ── Sharpe coloring for 3-asset cloud ──
     sharpe_yes = rets_yes / vols_yes
     sc = ax.scatter(vols_yes, rets_yes, c=sharpe_yes, cmap="RdYlGn",
                     alpha=0.25, s=6)
-
     plt.colorbar(sc, ax=ax, label="Sharpe Ratio")
 
     # ── Specific portfolios ──
@@ -492,40 +509,25 @@ def plot_efficient_frontier(returns: pd.DataFrame) -> plt.Figure:
         p_ret = r.mean() * 12 * 100
         p_vol = r.std() * np.sqrt(12) * 100
 
-        ax.scatter(
-            p_vol, p_ret,
-            color=mc,
-            s=120,
-            zorder=5,
-            marker="*",
-            label=name  # ✅ THIS is the key
-        )
+        ax.scatter(p_vol, p_ret, color=mc, s=120, zorder=5, marker="*", label=name)
+        ax.annotate(name, (p_vol, p_ret),
+                    textcoords="offset points", xytext=(8, 4),
+                    fontsize=8, color=mc)
 
-        ax.annotate(
-            name,
-            (p_vol, p_ret),
-            textcoords="offset points",
-            xytext=(8, 4),
-            fontsize=8,
-            color=mc
-        )
-
-    # ── Styling ──
     ax.set_title("Efficient Frontier: With vs Without Corporate Bonds",
                  fontsize=13, fontweight="bold")
     ax.set_xlabel("Annualized Volatility (%)")
     ax.set_ylabel("Annualized Return (%)")
     ax.legend(fontsize=9, loc="upper left")
     ax.grid(alpha=0.3)
-
     fig.tight_layout()
     return fig
+
 
 def plot_summary_table(bond_stats: pd.DataFrame,
                         mixed_stats: pd.DataFrame) -> plt.Figure:
     """
     Exhibit 5: Combined summary statistics table for all portfolios.
-    Colour coding: Sharpe (green/orange/red), Return (green/red).
     """
     all_stats = pd.concat([bond_stats, mixed_stats], ignore_index=True)
     display_cols = ["Portfolio", "Ann. Return (%)", "Ann. Vol (%)",
@@ -577,15 +579,16 @@ def plot_summary_table(bond_stats: pd.DataFrame,
     return fig
 
 
-def plot_systematic_risk_table(model) -> plt.Figure:
+def plot_systematic_risk_table(model, source: str) -> plt.Figure:
     """
     Exhibit 6: Systematic risk regression results as a formatted table.
-    corp_ig = alpha + beta_equity * equity + beta_govt * govt_mid + epsilon
+    corp_ig = alpha + beta_equity * equity + beta_govt * govt + epsilon
 
-    Alpha annualized = alpha_monthly * 12 * 100 (in percent)
-    R2 = fraction of corporate bond variance explained by equity + duration factors
-    1-R2 = idiosyncratic (diversifiable) component
+    Govt factor label adapts to data source (iBoxx all-mat vs ETF 7-10Y).
     """
+    govt_factor_name = ("Govt (iBoxx all mat.)" if source == "refinitiv"
+                        else "Govt Mid (7-10Y)")
+
     rows = [
         ["Alpha (monthly %)", f"{model.params['const']*100:.3f}",
          f"{model.pvalues['const']:.3f}",
@@ -595,9 +598,9 @@ def plot_systematic_risk_table(model) -> plt.Figure:
         ["Beta — Equity", f"{model.params['equity']:.4f}",
          f"{model.pvalues['equity']:.3f}",
          "★" if model.pvalues['equity'] < 0.05 else ""],
-        ["Beta — Govt Mid", f"{model.params['govt_mid']:.4f}",
-         f"{model.pvalues['govt_mid']:.3f}",
-         "★" if model.pvalues['govt_mid'] < 0.05 else ""],
+        [f"Beta — {govt_factor_name}", f"{model.params['govt']:.4f}",
+         f"{model.pvalues['govt']:.3f}",
+         "★" if model.pvalues['govt'] < 0.05 else ""],
         ["R-squared", f"{model.rsquared:.3f}", "—",
          f"Factor model explains {model.rsquared*100:.1f}% of corp variance"],
         ["1 - R²  (idiosyncratic)", f"{1-model.rsquared:.3f}", "—",
@@ -632,9 +635,11 @@ def plot_systematic_risk_table(model) -> plt.Figure:
     except Exception:
         pass
 
+    source_note = ("iBoxx EUR Sovereigns (all mat.)" if source == "refinitiv"
+                   else "Govt Mid 7-10Y ETF")
     fig.suptitle(
-        "Systematic Risk Decomposition: corp_ig = α + β_equity·equity + β_govt·govt + ε\n"
-        "★ = significant at 5% level  |  HC3 robust standard errors",
+        f"Systematic Risk Decomposition: corp_ig = α + β_equity·equity + β_govt·govt + ε\n"
+        f"★ = significant at 5% level  |  HC3 robust SE  |  Govt factor: {source_note}",
         fontsize=11, fontweight="bold")
     fig.tight_layout()
     return fig
@@ -644,9 +649,7 @@ def plot_rolling_equity_beta(returns: pd.DataFrame,
                               window: int = 36) -> plt.Figure:
     """
     Exhibit 7: Rolling 36-month beta of corporate bonds to equity.
-    Beta spikes during crises = correlation breakdown.
-    This is the key risk of using corporate bonds as diversifiers —
-    they lose equity-diversification precisely when it is needed most.
+    Uses portfolio data (has 'corp_ig' and 'equity' columns).
     """
     rolling_beta = compute_rolling_equity_beta(returns, window)
 
@@ -664,7 +667,7 @@ def plot_rolling_equity_beta(returns: pd.DataFrame,
 
     ax.set_title(f"Rolling {window}-Month Equity Beta of Corporate IG Bonds",
                  fontsize=13, fontweight="bold")
-    ax.set_ylabel("Beta to Equity (MSCI World)")
+    ax.set_ylabel("Beta to Equity (MSCI Europe)")
     ax.legend(fontsize=9)
     ax.grid(alpha=0.3)
     fig.tight_layout()
@@ -675,8 +678,6 @@ def plot_drawdown_all(bond_ports: pd.DataFrame,
                        mixed_ports: pd.DataFrame) -> plt.Figure:
     """
     Exhibit 8: Drawdown for all portfolios side by side.
-    Key episodes: GFC 2008, COVID 2020, Hiking 2022.
-    Shows tail risk cost of different allocations.
     """
     all_ports = pd.concat([bond_ports, mixed_ports], axis=1)
     colors_list = ["darkorange", "steelblue", "green",
@@ -707,10 +708,11 @@ def plot_drawdown_all(bond_ports: pd.DataFrame,
     fig.tight_layout()
     return fig
 
+
 def plot_frontiers_and_cals(returns: pd.DataFrame, rf: float = 0.0) -> plt.Figure:
     fig, ax = plt.subplots(figsize=(10, 7))
 
-    # ── FRONTIERS ──
+    # ── Frontiers ──
     fvols_no, frets_no = compute_exact_frontier(returns, include_corp=False)
     fvols_yes, frets_yes = compute_exact_frontier(returns, include_corp=True)
 
@@ -722,7 +724,7 @@ def plot_frontiers_and_cals(returns: pd.DataFrame, rf: float = 0.0) -> plt.Figur
             color="steelblue", linewidth=2,
             label="Frontier: Equity + Govt + Corp")
 
-    # ── TANGENCY PORTFOLIOS ──
+    # ── Tangency portfolios ──
     def compute_tangent(returns, include_corp):
         if include_corp:
             assets = ["equity", "govt_mid", "corp_ig"]
@@ -745,33 +747,29 @@ def plot_frontiers_and_cals(returns: pd.DataFrame, rf: float = 0.0) -> plt.Figur
     ret_no, vol_no = compute_tangent(returns, include_corp=False)
     ret_yes, vol_yes = compute_tangent(returns, include_corp=True)
 
-    # ── CAL LINES ──
+    # ── CAL lines ──
     x = np.linspace(0, max(fvols_yes) * 1.2, 200)
 
     ax.plot(x, (ret_no / vol_no) * x,
             linestyle="--", color="darkorange", alpha=0.8,
             label="CAL (no corp)")
 
-    ax.plot(
-        x, (ret_yes / vol_yes) * x,
-        linestyle=(3, (6, 4)),  # 👈 shifted phase
-        color="steelblue",
-        alpha=0.8,
-        label="CAL (with corp)"
-    )
+    ax.plot(x, (ret_yes / vol_yes) * x,
+            linestyle=(3, (6, 4)),
+            color="steelblue", alpha=0.8,
+            label="CAL (with corp)")
 
-    # ── MARK TANGENCY POINTS (optional but clean) ──
+    # ── Mark tangency points ──
     ax.scatter(vol_no, ret_no, color="darkorange", s=80, zorder=5)
     ax.scatter(vol_yes, ret_yes, color="steelblue", s=80, zorder=5)
 
-    # ── STYLING ──
+    # ── Styling ──
     ax.set_title("Efficient Frontier & Capital Allocation Lines",
                  fontsize=13, fontweight="bold")
     ax.set_xlabel("Annualized Volatility (%)")
     ax.set_ylabel("Annualized Return (%)")
     ax.legend(fontsize=10)
     ax.grid(alpha=0.3)
-
     fig.tight_layout()
     return fig
 
@@ -784,9 +782,15 @@ def run_all() -> dict:
     """
     Run full Q5 analysis.
     Returns dict of {filename: Figure} for main.py to save.
+
+    Data strategy:
+      - Portfolio construction uses ETF data (needs maturity buckets)
+      - Systematic risk regression uses Refinitiv iBoxx (longer sample)
+        with ETF fallback if unavailable
     """
     # ── Load data ───────────────────────────────────────────
-    returns = load_all_returns()
+    returns = load_all_returns()                          # ETF-based, for portfolios
+    reg_returns, reg_source = load_regression_returns()   # Refinitiv-preferred, for regression
 
     # ── Build portfolios ────────────────────────────────────
     bond_port_returns  = build_all_portfolios(returns, BOND_PORTFOLIOS)
@@ -804,8 +808,8 @@ def run_all() -> dict:
     print(mixed_stats[["Portfolio", "Ann. Return (%)", "Sharpe",
                         "Max DD (%)"]].to_string(index=False))
 
-    # ── Systematic risk ─────────────────────────────────────
-    model = run_systematic_risk_regression(returns)
+    # ── Systematic risk (uses longer Refinitiv sample if available) ──
+    model = run_systematic_risk_regression(reg_returns, reg_source)
 
     # ── Figures ─────────────────────────────────────────────
     return {
@@ -814,9 +818,9 @@ def run_all() -> dict:
         "Q5_correlation_heatmap.png":       plot_correlation_heatmap(returns),
         "Q5_efficient_frontier.png":        plot_efficient_frontier(returns),
         "Q5_summary_table.png":             plot_summary_table(bond_stats, mixed_stats),
-        "Q5_systematic_risk_regression.png":plot_systematic_risk_table(model),
+        "Q5_systematic_risk_regression.png":plot_systematic_risk_table(model, reg_source),
         "Q5_rolling_equity_beta.png":       plot_rolling_equity_beta(returns),
         "Q5_drawdown_all.png":              plot_drawdown_all(bond_port_returns,
                                                               mixed_port_returns),
-        "Q5_frontier_cals.png": plot_frontiers_and_cals(returns),
+        "Q5_frontier_cals.png":             plot_frontiers_and_cals(returns),
     }

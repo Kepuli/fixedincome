@@ -20,10 +20,37 @@ DATA_RAW.mkdir(exist_ok=True)
 import_ecb_spot     = False
 import_etf_data     = False
 import_msci         = False
-import_refinitiv    = True   # ← new flag
+import_refinitiv    = False   # ← new flag
+import_msci_refinitiv = True
 
 ##########################
 
+def fetch_and_save_msci_refinitiv():
+    """Fetch MSCI Europe Net Return Index (EUR) from Refinitiv."""
+    import refinitiv.data as rd
+    rd.open_session()
+
+    print("Fetching MSCI Europe Net Return (EUR) from Refinitiv...")
+    df = rd.get_history(
+        universe=".dMIEU00000NEU",
+        fields=["TRDPRC_1"],
+        interval="daily",
+        start="2000-01-01",
+        end="2025-12-31",
+    )
+
+    print(f"  Raw rows: {len(df)}, columns: {list(df.columns)}")
+
+    # Resample daily → month-end, compute log returns
+    monthly = df.resample("ME").last()
+    monthly["equity_logret"] = np.log(monthly.iloc[:, 0] / monthly.iloc[:, 0].shift(1))
+    monthly = monthly[["equity_logret"]].dropna()
+
+    monthly.to_parquet(DATA_PROCESSED / "msci_europe.parquet")
+    print(f"✓ MSCI Europe saved: {monthly.index.min().date()} → {monthly.index.max().date()}"
+          f"  ({len(monthly)} observations)")
+
+    rd.close_session()
 
 
 # ── Refinitiv fetch function ──────────────────────────────────
@@ -162,7 +189,7 @@ def fetch_etf_data():
     print(f"✓ Saved ETF data. Coverage:")
     print(raw.apply(lambda c: f"{c.first_valid_index().date()} → {c.last_valid_index().date()}"))
 
-fetch_etf_data()
+#fetch_etf_data()
 
 
 
@@ -237,3 +264,7 @@ if import_refinitiv:
     fetch_and_save_refinitiv()
 else:
     print("⚠ Skipped msci data (import_refinitiv_data = False)")
+if import_msci_refinitiv:
+    fetch_and_save_msci_refinitiv()
+else:
+    print("⚠ Skipped MSCI Europe Refinitiv (import_msci_refinitiv = False)")
