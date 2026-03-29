@@ -16,6 +16,15 @@ from src.data_loader import (
 from scipy.signal import savgol_filter
 import csv
 
+def sharpe_color(s):
+    if s > 1:
+        return "#d5f5e3"   # strong green
+    elif s > 0.5:
+        return "#e8f8f5"   # light green
+    elif s > 0:
+        return "#fdebd0"   # orange
+    else:
+        return "#fadbd8"   # red
 
 # ══════════════════════════════════════════════════════════════
 # 1. DATA PREPARATION
@@ -565,8 +574,7 @@ def plot_summary_table(bond_stats: pd.DataFrame,
 
         try:
             s = float(table[(i, sharpe_col)].get_text().get_text())
-            table[(i, sharpe_col)].set_facecolor(
-                "#D5F5E3" if s > 0.5 else "#FDEBD0" if s > 0 else "#FADBD8")
+            table[(i, sharpe_col)].set_facecolor(sharpe_color(s))
         except ValueError:
             pass
 
@@ -632,8 +640,14 @@ def plot_systematic_risk_table(model, source: str) -> plt.Figure:
 
     # Highlight alpha row
     try:
-        a_pval = model.pvalues['const']
-        color = "#D5F5E3" if a_pval < 0.05 else "#FDEBD0"
+        alpha = model.params['const']
+        pval = model.pvalues['const']
+
+        if pval < 0.05:
+            color = "#d5f5e3" if alpha > 0 else "#fadbd8"
+        else:
+            color = "#fdebd0"
+
         for j in range(4):
             table[(1, j)].set_facecolor(color)
     except Exception:

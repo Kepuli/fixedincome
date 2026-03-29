@@ -240,7 +240,7 @@ def plot_summary_table(df_table: pd.DataFrame) -> plt.Figure:
             val = table[(i, sharpe_col)].get_text().get_text()
             try:
                 s = float(val)
-                color = "#d5f5e3" if s > 0.5 else "#fdebd0" if s > 0 else "#fadbd8"
+                color = "#d5f5e3" if s > 1 else "#fdebd0" if s > 0 else "#fadbd8"
                 table[(i, sharpe_col)].set_facecolor(color)
             except ValueError:
                 pass

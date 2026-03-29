@@ -31,7 +31,15 @@ from src.data_loader import (
     load_corp_returns_refinitiv,
 )
 
-
+def sharpe_color(s):
+    if s > 1:
+        return "#d5f5e3"   # strong green
+    elif s > 0.5:
+        return "#e8f8f5"   # light green
+    elif s > 0:
+        return "#fdebd0"   # orange
+    else:
+        return "#fadbd8"   # red
 # ── 0. Data loading — Refinitiv preferred, ETF fallback ──────
 
 def load_q4_returns() -> tuple[pd.DataFrame, str]:
@@ -349,8 +357,7 @@ def plot_summary_table(df_table: pd.DataFrame) -> plt.Figure:
         # Colour Sharpe
         try:
             s = float(table[(i, sharpe_col)].get_text().get_text())
-            table[(i, sharpe_col)].set_facecolor(
-                "#D5F5E3" if s > 0.5 else "#FDEBD0" if s > 0 else "#FADBD8")
+            table[(i, sharpe_col)].set_facecolor(sharpe_color(s))
         except ValueError:
             pass
 
